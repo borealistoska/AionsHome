@@ -53,6 +53,25 @@ class QQStoreTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.store.configure(patch)
 
+    def test_actor_settings_inherit_old_values_then_remain_independent(self):
+        from qq_social.store import Store
+        self.store.configure({'enabled':True,'mode':'natural','interval_seconds':180,'context_messages':40})
+        self.assertEqual(self.store.settings('aion')['interval_seconds'],180)
+        self.store.configure_actor('aion',{'enabled':False,'mode':'respond','interval_seconds':600,'context_messages':10})
+        self.store.configure_actor('connor',{'mode':'natural','interval_seconds':30,'context_messages':50})
+        reloaded = Store(self.store.path)
+        self.assertFalse(reloaded.settings('aion')['enabled'])
+        self.assertEqual(reloaded.settings('aion')['mode'],'respond')
+        self.assertTrue(reloaded.settings('connor')['enabled'])
+        self.assertEqual(reloaded.settings('connor')['context_messages'],50)
+        self.assertEqual(reloaded.settings('aion')['interval_seconds'],600)
+        before = reloaded.settings('connor')['epoch']
+        reloaded.configure_actor('aion',{'enabled':True})
+        self.assertEqual(reloaded.settings('connor')['epoch'],before)
+        reloaded.configure({'enabled':False})
+        self.assertFalse(reloaded.settings('connor')['enabled'])
+        self.assertTrue(reloaded.actor_settings('connor')['enabled'])
+
 
 class QQPolicyTests(unittest.TestCase):
     def test_queued_natural_calls_keep_interval_even_if_previous_call_was_silent(self):
@@ -175,7 +194,7 @@ class QQServiceTests(unittest.IsolatedAsyncioTestCase):
         self.sent = []
         class Transport:
             user_id = 'bot-id'
-            async def send(inner, group_id, content, message_id):
+            async def send(inner, group_id, content, message_id, **kwargs):
                 self.sent.append(content)
                 return {'id':'out1'}
         self.calls = 0
@@ -187,6 +206,90 @@ class QQServiceTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self):
         await self.service.close()
+
+    async def test_disabled_actor_drops_mentions_while_other_actor_still_replies(self):
+        import time
+        self.service.transports['connor'] = self.service.transports['aion']
+        self.service.configure({'enabled':True,'bind_first_group':True})
+        self.service.configure({'enabled':False},actor='aion')
+        self.event['timestamp']=time.time()
+        await self.service.ingest('aion','GROUP_AT_MESSAGE_CREATE',self.event)
+        await self.service.ingest('connor','GROUP_AT_MESSAGE_CREATE',self.event)
+        await self.service.drain()
+        self.assertEqual(self.calls,1)
+        self.assertEqual(self.store.history('aion','g1'),[])
+        self.assertEqual(self.sent,['你好'])
+
+    async def test_actor_mode_and_interval_are_used_independently(self):
+        import time
+        self.service.transports['connor'] = self.service.transports['aion']
+        self.service.configure({'enabled':True,'bind_first_group':True})
+        self.service.configure({'mode':'respond','interval_seconds':600},actor='aion')
+        self.service.configure({'mode':'natural','interval_seconds':10},actor='connor')
+        now=time.time()
+        for actor in ('aion','connor'):
+            self.service.policy.started((actor,'g1'),direct=False,now=now-15)
+            await self.service.ingest(actor,'GROUP_MESSAGE_CREATE',{**self.event,'timestamp':now})
+        await self.service.drain()
+        self.assertEqual(self.calls,1)
+        self.assertEqual(self.sent,['你好'])
+
+    async def test_disabling_one_actor_preserves_other_inflight_reply(self):
+        import time
+        self.service.transports['connor'] = self.service.transports['aion']
+        self.service.configure({'enabled':True,'bind_first_group':True})
+        entered,release=asyncio.Event(),asyncio.Event()
+        async def slow(*args):
+            entered.set()
+            await release.wait()
+            return '仍然回复'
+        self.service.generator=slow
+        await self.service.ingest('connor','GROUP_AT_MESSAGE_CREATE',{**self.event,'timestamp':time.time()})
+        await asyncio.wait_for(entered.wait(),2)
+        self.service.configure({'enabled':False},actor='aion')
+        release.set()
+        await self.service.drain()
+        self.assertEqual(self.sent,['仍然回复'])
+
+    async def test_actor_close_reopen_discards_its_own_inflight_reply(self):
+        import time
+        self.service.configure({'enabled':True,'bind_first_group':True})
+        entered,release=asyncio.Event(),asyncio.Event()
+        async def slow(*args):
+            entered.set()
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                pass
+            return '过时回复'
+        self.service.generator=slow
+        await self.service.ingest('aion','GROUP_AT_MESSAGE_CREATE',{**self.event,'timestamp':time.time()})
+        await asyncio.wait_for(entered.wait(),2)
+        self.service.configure({'enabled':False},actor='aion')
+        self.service.configure({'enabled':True},actor='aion')
+        release.set()
+        await self.service.drain()
+        self.assertEqual(self.sent,[])
+
+    async def test_disabled_actor_skips_background_model_work(self):
+        from unittest.mock import patch, AsyncMock
+        self.service.transports['connor'] = self.service.transports['aion']
+        self.service.configure({'enabled':True,'bind_first_group':True})
+        group=self.store.discover('aion','g1')
+        self.service.configure({'enabled':False},actor='aion')
+        with patch('qq_social.context.summarize_group',new=AsyncMock()) as summary:
+            await self.service.digest_group(group,[{'id':1}],self.store.settings('aion')['epoch'])
+            summary.assert_not_awaited()
+        sleeps=0
+        async def sleep(_):
+            nonlocal sleeps
+            sleeps+=1
+            if sleeps>1:
+                raise asyncio.CancelledError()
+        with patch('qq_social.service.asyncio.sleep',sleep), patch('external_memories.retry_pending_index',new=AsyncMock()) as retry:
+            with self.assertRaises(asyncio.CancelledError):
+                await self.service.digest_groups()
+            retry.assert_awaited_once_with('connor')
 
     async def test_off_drops_body_and_duplicate_generates_once(self):
         await self.service.ingest('aion', 'GROUP_AT_MESSAGE_CREATE', self.event)
@@ -287,7 +390,8 @@ class QQServiceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_image_wait_uses_saved_setting(self):
         import time
-        self.service.configure({'enabled':True,'bind_first_group':True,'image_wait_seconds':90})
+        self.service.configure({'enabled':True,'bind_first_group':True,'image_wait_seconds':60})
+        self.service.configure({'image_wait_seconds':90},actor='aion')
         picture={**self.event,'timestamp':time.time(),'content':'','attachments':[{'content_type':'image/jpeg','url':'https://multimedia.nt.qq.com.cn/a'}]}
         before=time.monotonic()
         await self.service.ingest('aion','GROUP_AT_MESSAGE_CREATE',picture)
@@ -299,7 +403,8 @@ class QQServiceTests(unittest.IsolatedAsyncioTestCase):
         from unittest.mock import AsyncMock, patch
         import time, json
         from qq_social.context import generate_reply
-        self.store.configure({'context_messages':5,'bind_first_group':True})
+        self.store.configure({'context_messages':35,'bind_first_group':True})
+        self.store.configure_actor('aion',{'context_messages':5})
         group=self.store.discover('aion','g1')
         for n in range(9):
             self.store.record(dict(actor='aion',group_id='g1',message_id=str(n),member_id='u1',name='朋友',content='消息'+str(n),is_bot=False,direction='in',created_at=time.time()-10+n))
@@ -314,6 +419,89 @@ class QQServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([row['text'] for row in transcript],['消息4','消息5','消息6','消息7','消息8'])
         trigger=json.loads(content.split('[本次触发消息]\n')[1].split('\n')[0])
         self.assertEqual(trigger,{'id':'original','member':'u2','text':'排队前的问题'})
+
+    async def test_reply_selects_recent_target_once_and_preserves_memory(self):
+        import time
+        from unittest.mock import AsyncMock,patch
+        from qq_social.context import generate_reply
+        self.service.configure({'enabled':True,'bind_first_group':True})
+        group=self.store.discover('aion','g1')
+        for mid,age,direction in [('old',600,'in'),('own',2,'out'),('topic',1,'in')]:
+            self.store.record(dict(actor='aion',group_id='g1',message_id=mid,member_id='friend',
+                name='朋友',content='兔子的话题',is_bot=False,direction=direction,
+                created_at=time.time()-age,ref_id='REFIDX_'+mid))
+        event=dict(message_id='trigger',member_id='u1',content='新话题',created_at=time.time(),ref_id='REFIDX_trigger')
+        cases=[('［回复消息：q3］\n兔子好可爱。\n［带回小家记忆：朋友养了兔子。］',False,'兔子好可爱。','REFIDX_topic','朋友养了兔子。'),
+               ('［面向全群］\n大家聊得好热闹。',False,'大家聊得好热闹。','',''),
+               ('［回复消息：q1］\n过时的话。',False,'','',''),
+               ('［回复消息：q2］\n回自己。',False,'','',''),
+               ('［回复消息：foreign］\n串群了。',False,'','',''),
+               ('突然插话。',False,'','',''),
+               ('[保持安静]\n［带回小家记忆：一次见闻。］',False,'','','一次见闻。'),
+               ('［回复消息：q3］\n收到点名。',True,'收到点名。','REFIDX_trigger','')]
+        for raw,direct,text,reference,memory in cases:
+            with self.subTest(raw=raw), patch('qq_social.context.private_context',new=AsyncMock(return_value=('model',{'aion':'AI','user':'用户'},'private',{}))), patch('qq_social.context.call_model',new=AsyncMock(return_value=raw)) as model:
+                result=await generate_reply('aion',group,event,self.store,direct,{})
+                self.assertEqual((result.text,result.reference_id,result.memory),(text,reference,memory))
+                self.assertEqual(model.await_count,1)
+
+    async def test_direct_send_uses_mention_reference_even_after_image_merge(self):
+        import time
+        from unittest.mock import AsyncMock
+        self.service.configure({'enabled':True,'bind_first_group':True,'mode':'natural'})
+        send=AsyncMock(return_value={'id':'quoted-out'})
+        self.service.transports['aion'].send=send
+        self.service.image_wait_seconds=.04
+        picture={**self.event,'timestamp':time.time(),'content':'',
+                 'attachments':[{'content_type':'image/png','url':'https://gchat.qpic.cn/a.png'}],
+                 'message_scene':{'ext':['msg_idx=REFIDX_picture']}}
+        await self.service.ingest('aion','GROUP_AT_MESSAGE_CREATE',picture)
+        await self.service.ingest('aion','GROUP_MESSAGE_CREATE',
+            {**self.event,'id':'followup','timestamp':time.time(),'content':'看看颜色',
+             'message_scene':{'ext':['msg_idx=REFIDX_followup']}})
+        await self.service.drain()
+        self.assertEqual(send.await_count,1)
+        self.assertEqual(send.call_args.kwargs,{'reference_id':'REFIDX_picture'})
+        self.assertEqual(send.call_args.args[2],'followup')
+
+    async def test_full_group_self_mention_bypasses_natural_cooldown(self):
+        import time
+        self.service.configure({'enabled':True,'bind_first_group':True,'mode':'natural','interval_seconds':300})
+        self.service.policy.started(('aion','g1'),direct=False,now=time.time())
+        direct_calls=[]
+        async def capture(actor,group,event,store,direct,diag):
+            direct_calls.append(direct)
+            return '回应点名'
+        self.service.generator=capture
+        event={**self.event,'timestamp':time.time(),'content':'<@group-scoped-id> 在吗',
+               'mentions':[{'id':'group-scoped-id','is_you':True}]}
+        await self.service.ingest('aion','GROUP_MESSAGE_CREATE',event)
+        await self.service.drain()
+        self.assertEqual(direct_calls,[True])
+        self.assertEqual(self.sent,['回应点名'])
+
+    async def test_self_mention_in_full_event_also_works_in_mention_only_mode(self):
+        import time
+        self.service.configure({'enabled':True,'bind_first_group':True,'mode':'respond'})
+        event={**self.event,'timestamp':time.time(),
+               'mentions':[{'id':'group-scoped-id','is_you':True}]}
+        await self.service.ingest('aion','GROUP_MESSAGE_CREATE',event)
+        # Repeat delivery must not generate or send twice.
+        await self.service.ingest('aion','GROUP_AT_MESSAGE_CREATE',event)
+        await self.service.drain()
+        self.assertEqual(self.calls,1)
+        self.assertEqual(self.sent,['你好'])
+
+    async def test_other_member_mentions_do_not_bypass_natural_cooldown(self):
+        import time
+        self.service.configure({'enabled':True,'bind_first_group':True,'mode':'natural'})
+        self.service.policy.started(('aion','g1'),direct=False,now=time.time())
+        for index,mentions in enumerate(([{'id':'friend','is_you':False}],
+                                         [{'id':'friend','is_you':'false'}],None)):
+            await self.service.ingest('aion','GROUP_MESSAGE_CREATE',
+                {**self.event,'id':str(index),'timestamp':time.time(),'mentions':mentions})
+        await self.service.drain()
+        self.assertEqual(self.calls,0)
 
     async def test_mention_only_ignores_plain_and_quoted_messages(self):
         import time
@@ -434,6 +622,11 @@ class QQTransportTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(requests[-1].url.path,'/v2/groups/group1/messages')
             self.assertEqual(__import__('json').loads(requests[-1].content)['msg_id'],'original')
             self.assertNotIn('private',str(bot.status))
+            await bot.send('group1','有明确对象','latest-trigger',reference_id='REFIDX_earlier')
+            body=__import__('json').loads(requests[-1].content)
+            self.assertEqual(body['msg_id'],'latest-trigger')
+            self.assertEqual(body['message_reference'],{'message_id':'REFIDX_earlier','ignore_get_message_error':True})
+            self.assertNotIn('private',str(body))
         finally:
             await bot.close()
 
@@ -452,6 +645,26 @@ class QQTransportTests(unittest.IsolatedAsyncioTestCase):
 
 
 class QQManagementTests(unittest.TestCase):
+    def test_actor_settings_api_changes_only_selected_actor(self):
+        from unittest.mock import patch
+        from fastapi.testclient import TestClient
+        from qq_social.worker import create_app
+        with tempfile.TemporaryDirectory() as tmp:
+            directory=Path(tmp)
+            (directory/'management.key').write_text('test-management')
+            client=TestClient(create_app(directory))
+            url='/actors/aion/settings'
+            self.assertEqual(client.patch(url,json={'enabled':False}).status_code,401)
+            headers={'authorization':'Bearer test-management'}
+            self.assertEqual(client.patch(url,json={'enabled':False,'interval_seconds':600},headers=headers).status_code,200)
+            self.assertEqual(client.patch(url,json={'interval_seconds':1},headers=headers).status_code,400)
+            with patch('qq_social.context.home_config',return_value=({}, {}, {}, {'aion':'甲','connor':'乙'})):
+                status=client.get('/status',headers=headers).json()
+            self.assertFalse(status['actors']['aion']['settings']['enabled'])
+            self.assertEqual(status['actors']['aion']['settings']['interval_seconds'],600)
+            self.assertTrue(status['actors']['connor']['settings']['enabled'])
+            self.assertEqual(status['actors']['connor']['settings']['interval_seconds'],120)
+
     def test_worker_rejects_unauthorized_requests(self):
         from fastapi.testclient import TestClient
         from qq_social.worker import create_app

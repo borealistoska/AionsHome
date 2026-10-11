@@ -49,9 +49,12 @@ class BotTransport:
             raise QQAPIError(f"QQ接口失败 HTTP {response.status_code} / {data.get('code','unknown')}")
         return data
 
-    async def send(self, group_id, content, message_id):
+    async def send(self, group_id, content, message_id, *, reference_id=''):
         from urllib.parse import quote
-        return await self.request('POST','/v2/groups/'+quote(group_id,safe='')+'/messages',json={'msg_type':0,'content':content,'msg_id':message_id,'msg_seq':1})
+        payload = {'msg_type':0,'content':content,'msg_id':message_id,'msg_seq':1}
+        if reference_id:
+            payload['message_reference'] = {'message_id':reference_id,'ignore_get_message_error':True}
+        return await self.request('POST','/v2/groups/'+quote(group_id,safe='')+'/messages',json=payload)
 
     async def run(self):
         while True:

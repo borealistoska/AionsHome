@@ -1,5 +1,7 @@
 'use strict';
 let state=null, selected=null, settingsDirty=false, busy=false, connectionError=false;
+let settingsActor='aion';
+const actorDrafts={};
 const $=id=>document.getElementById(id);
 const settingFields=['interval_seconds','context_messages','image_wait_seconds','hourly_limit','total_hourly_limit'];
 const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -41,6 +43,19 @@ async function saveCredential(event){
  }catch(error){credentialNotice(error.message,true);}
  finally{form.elements.secret.value='';busy=false;form.querySelector('button').disabled=false;await refresh();}
 }
+function renderActorSettings(){
+ const actor=state.actors[settingsActor],cfg=actor?.settings;
+ $('actorTabs').innerHTML=Object.entries(state.actors).map(([id,a])=>`<button type="button" data-settings-actor="${id}" aria-pressed="${id===settingsActor}">${esc(a.name)}</button>`).join('');
+ $('settingsTitle').textContent=(actor?.name||'AI')+'的回复设置';
+ for(const input of $('settings').querySelectorAll('input,button'))input.disabled=!cfg;
+ for(const button of $('modeControls').querySelectorAll('button')){button.disabled=!cfg;button.setAttribute('aria-pressed',String(button.dataset.mode===cfg?.mode));}
+ if(!cfg){$('modeLabel').textContent='需更新服务';$('modeHint').textContent='独立设置需要重启小家与 QQ 后生效。';return;}
+ $('modeLabel').textContent=!state.settings.enabled?'总开关已关':cfg.enabled?'点选即生效':'这位已暂停';
+ $('modeHint').textContent=!state.settings.enabled?'总开关已关闭；仍可分别设置下次开启后的回复方式。':!cfg.enabled?'这位已暂停，@ 回复、主动判断和 QQ 记忆整理都停止。':cfg.mode==='natural'?'这位被 @ 会回应，也会按自己的频率接话。':'这位只有被 @ 才回复，普通聊天和单独引用不触发。';
+ $('rateLabel').textContent=cfg.interval_seconds+' 秒 · '+cfg.context_messages+' 条';
+ if(!settingsDirty){for(const key of settingFields)$('settings').elements[key].value=cfg[key];}
+ $('settings').querySelector('button[type="submit"]').textContent='保存'+(actor?.name||'这位 AI')+'的参数';
+}
 async function refresh(){
  if(busy)return;
  try{
@@ -48,15 +63,11 @@ async function refresh(){
   if(connectionError){notice('');connectionError=false;}
   $('power').disabled=false;$('power').textContent=state.settings.enabled?'已开启 · 关闭':'已关闭 · 开启';$('power').classList.toggle('off',!state.settings.enabled);
   const actorOpen=[...$('actors').querySelectorAll('details[open]')].map(d=>d.dataset.actor);
-  $('actors').innerHTML=Object.entries(state.actors).map(([actor,a])=>`<article class="actor"><h2>${esc(a.name)}<span class="badge">${esc(a.state)}</span></h2><p class="model" title="${esc(a.model)}">${esc(a.model||'未选择模型')}</p><details data-actor="${actor}" ${actorOpen.includes(actor)?'open':''}><summary>连接详情</summary><p class="muted">收到：${date(a.last_event?.at)}<br>发送：${date(a.last_send)}</p>${a.context?.home_messages!==undefined?`<p class="muted">上次参考 ${a.context.home_messages} 条上下文、${a.context.recalled_memories} 条自身记忆</p>`:''}</details>${a.error||a.reply_error?`<p class="error">${esc(a.error||a.reply_error)}</p>`:''}</article>`).join('');
-  $('modeLabel').textContent=state.settings.enabled?'点选即生效':'总开关已关';
-  for(const b of $('modeControls').querySelectorAll('button')){b.disabled=false;b.setAttribute('aria-pressed',String(b.dataset.mode===state.settings.mode));}
-  $('modeHint').textContent=!state.settings.enabled?'所有回复已暂停；可预选下次开启的方式。':state.settings.mode==='natural'?'被 @ 会回应，也会根据话题低频接话。':'只有被 @ 才回复，普通聊天和单独引用不触发。';
-  $('rateLabel').textContent=state.settings.interval_seconds+' 秒 · '+(state.settings.context_messages??35)+' 条';
+  $('actors').innerHTML=Object.entries(state.actors).map(([actor,a])=>`<article class="actor"><h2>${esc(a.name)}<span class="badge">${esc(a.state)}</span></h2><p class="model" title="${esc(a.model)}">${esc(a.model||'未选择模型')}</p><label class="actor-participation"><input type="checkbox" data-actor-switch="${actor}" ${a.settings?.enabled?'checked':''} ${a.settings?'':'disabled'}>参与群聊</label><details data-actor="${actor}" ${actorOpen.includes(actor)?'open':''}><summary>连接详情</summary><p class="muted">收到：${date(a.last_event?.at)}<br>发送：${date(a.last_send)}</p>${a.context?.home_messages!==undefined?`<p class="muted">上次参考 ${a.context.home_messages} 条上下文、${a.context.recalled_memories} 条自身记忆</p>`:''}</details>${a.error||a.reply_error?`<p class="error">${esc(a.error||a.reply_error)}</p>`:''}</article>`).join('');
+  renderActorSettings();
   $('bringHome').checked=state.settings.bring_home??true;
   $('bringHome').disabled=state.settings.bring_home===undefined;
   if($('outsidePanel').open)await refreshOutside();
-  if(!settingsDirty){const f=$('settings');for(const k of settingFields)f.elements[k].value=state.settings[k]??({context_messages:35,image_wait_seconds:60}[k]);}
   $('groups').innerHTML=state.groups.length?state.groups.map(g=>`<div class="group"><div class="row"><div><strong>${esc(g.name||'朋友群 · '+g.group_id.slice(-6))}</strong><br><small>${esc(state.actors[g.actor]?.name||g.actor)} · ${g.full_messages?'可见普通群消息':'等待普通群消息'}</small></div><button data-detail="${g.id}">聊天与记忆</button></div><div class="switches"><label><input type="checkbox" data-group="${g.id}" data-field="enabled" ${g.enabled?'checked':''}> 参与</label><label><input type="checkbox" data-group="${g.id}" data-field="memory_enabled" ${g.memory_enabled?'checked':''}> 积累记忆</label></div></div>`).join(''):'<p class="empty">在目标群 @ 已接入的 AI，即可完成首次配对。</p>';
   if(selected)await detail(selected);
  }catch(e){connectionError=true;notice(e.message,true);$('power').disabled=true;for(const b of $('modeControls').querySelectorAll('button'))b.disabled=true;}
@@ -76,6 +87,14 @@ async function detail(id){
 }
 async function action(fn){if(busy)return;busy=true;$('power').disabled=true;for(const b of $('modeControls').querySelectorAll('button'))b.disabled=true;try{await fn();notice('已保存');}catch(e){notice(e.message,true);}finally{busy=false;await refresh();}}
 $('power').onclick=()=>action(()=>api('settings','PATCH',{enabled:!state.settings.enabled}));
+$('actors').onchange=e=>{const actor=e.target.dataset.actorSwitch;if(actor)action(()=>api('actors/'+actor+'/settings','PATCH',{enabled:e.target.checked}));};
+$('actorTabs').onclick=e=>{
+ const actor=e.target.closest('[data-settings-actor]')?.dataset.settingsActor;
+ if(!actor||actor===settingsActor||busy)return;
+ if(settingsDirty)actorDrafts[settingsActor]=Object.fromEntries(settingFields.map(k=>[k,$('settings').elements[k].value]));
+ settingsActor=actor;settingsDirty=Boolean(actorDrafts[actor]);renderActorSettings();
+ if(settingsDirty)for(const k of settingFields)$('settings').elements[k].value=actorDrafts[actor][k];
+};
 $('bringHome').onchange=e=>action(()=>api('settings','PATCH',{bring_home:e.target.checked}));
 async function refreshOutside(){
  const res=await fetch('/api/external-memories');if(!res.ok)throw Error(res.status===404?'新功能已准备好，重启小家和 QQ 服务后启用。':'外出回忆暂时无法读取');const data=await res.json();
@@ -84,10 +103,10 @@ async function refreshOutside(){
 }
 $('outsidePanel').ontoggle=()=>{if($('outsidePanel').open)refreshOutside().catch(e=>notice(e.message,true));};
 $('outsideMemories').onclick=e=>{const b=e.target.closest('[data-collapse]');if(b)b.closest('details').open=false;};
-$('modeControls').onclick=e=>{const b=e.target.closest('[data-mode]');if(b&&state&&b.dataset.mode!==state.settings.mode)action(()=>api('settings','PATCH',{mode:b.dataset.mode}));};
+$('modeControls').onclick=e=>{const b=e.target.closest('[data-mode]');const actor=settingsActor;if(b&&state?.actors[actor]?.settings&&b.dataset.mode!==state.actors[actor].settings.mode)action(()=>api('actors/'+actor+'/settings','PATCH',{mode:b.dataset.mode}));};
 $('settings').oninput=()=>{settingsDirty=true;};
 $('presets').onclick=e=>{const b=e.target.closest('[data-interval]');if(!b)return;const f=$('settings');f.elements.interval_seconds.value=b.dataset.interval;f.elements.hourly_limit.value=b.dataset.hourly;settingsDirty=true;notice('已填入快捷值，点击保存参数后生效');};
-$('settings').onsubmit=e=>{e.preventDefault();const f=e.currentTarget;action(async()=>{await api('settings','PATCH',Object.fromEntries(settingFields.map(k=>[k,Number(f.elements[k].value)])));settingsDirty=false;});};
+$('settings').onsubmit=e=>{e.preventDefault();const f=e.currentTarget,actor=settingsActor;action(async()=>{await api('actors/'+actor+'/settings','PATCH',Object.fromEntries(settingFields.map(k=>[k,Number(f.elements[k].value)])));settingsDirty=false;delete actorDrafts[actor];});};
 $('groups').onchange=e=>{const t=e.target;if(t.dataset.group)action(()=>api('groups/'+t.dataset.group,'PATCH',{[t.dataset.field]:t.checked}));};
 $('groups').onclick=e=>{const b=e.target.closest('[data-detail]');if(b)detail(b.dataset.detail).catch(e=>notice(e.message,true));};
 $('detail').onclick=e=>{const collapse=e.target.closest('[data-collapse]');if(collapse)collapse.closest('details').open=false;const d=e.target.closest('[data-delete]');if(d)action(()=>api('memories/'+d.dataset.delete,'DELETE'));const m=e.target.closest('[data-member]');if(m){const alias=prompt('给这位群成员的备注名',m.dataset.alias);if(alias===null)return;const owner=confirm('这位是你本人（小家的用户）吗？\n确定：标记为你；取消：普通朋友。');action(()=>api('groups/'+selected+'/members/'+encodeURIComponent(m.dataset.member),'PATCH',{alias,is_owner:owner}));}};

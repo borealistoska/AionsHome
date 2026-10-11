@@ -25,6 +25,7 @@ class Service:
         self.generator = generator or generate_reply
         self.policy = ReplyPolicy()
         self.tasks = set()
+        self.task_actors = {}
         self.serial = asyncio.Semaphore(1)
         self.diagnostics = {}
         self.last_event = {}
@@ -32,24 +33,36 @@ class Service:
         self.last_send = {}
         self.digest_attempt = {}
         self.digest_task = None
+        self.digest_actor = None
         self.image_wait_seconds = None  # optional test override; live value comes from settings
         self.image_batches = {}
         self.started_at = time.time()
 
-    def configure(self, patch):
-        cfg = self.store.configure(patch)
-        self.cancel_pending()
+    def configure(self, patch, actor=None):
+        cfg = self.store.configure(patch) if actor is None else self.store.configure_actor(actor,patch)
+        self.cancel_pending(actor)
         return cfg
 
-    def cancel_pending(self):
-        self.image_batches.clear()
+    def track_task(self, task, actor):
+        self.tasks.add(task)
+        self.task_actors[task] = actor
+        def done(finished):
+            self.tasks.discard(finished)
+            self.task_actors.pop(finished,None)
+        task.add_done_callback(done)
+
+    def cancel_pending(self, actor=None):
+        for key in list(self.image_batches):
+            if actor is None or key[0]==actor:
+                self.image_batches.pop(key,None)
         for task in list(self.tasks):
-            task.cancel()
-        if self.digest_task:
+            if actor is None or self.task_actors.get(task)==actor:
+                task.cancel()
+        if self.digest_task and (actor is None or self.digest_actor==actor):
             self.digest_task.cancel()
 
     def active(self, actor, group_id, epoch):
-        cfg = self.store.settings()
+        cfg = self.store.settings(actor)
         group = self.store.group(actor, group_id)
         return cfg['enabled'] and cfg['epoch']==epoch and group and group['enabled']
 
@@ -57,7 +70,7 @@ class Service:
         if kind not in ('GROUP_AT_MESSAGE_CREATE','GROUP_MESSAGE_CREATE','GROUP_ADD_ROBOT'):
             return
         self.last_event[actor] = {'kind':kind, 'at':time.time()}
-        cfg = self.store.settings()
+        cfg = self.store.settings(actor)
         if not cfg['enabled']:
             return
         group_id = str(data.get('group_openid') or '')
@@ -98,14 +111,23 @@ class Service:
                      member_id=member, name=str(author.get('username') or '')[:80],
                      content=content[:6000], is_bot=bool(author.get('bot')), direction='in',
                      created_at=created, ref_id=ext.get('msg_idx',''), attachments=attachments)
+        # Full group delivery can use a group-scoped mention ID, different from
+        # /users/@me. QQ's explicit self marker is authoritative in that case.
+        bot_id = self.transports[actor].user_id
+        mentions = [m for m in (data.get('mentions') or []) if isinstance(m,dict)]
+        self_mention = any(m.get('is_you') is True for m in mentions)
+        id_mention = bool(bot_id) and any(str(m.get('id',''))==bot_id for m in mentions)
+        direct = kind == 'GROUP_AT_MESSAGE_CREATE' or self_mention or id_mention
+        if direct:
+            event['reply_reference'] = event['ref_id'] or event['message_id']
+        # Keep only recognition metadata for diagnosis, never member IDs or text.
+        self.last_event[actor].update(direct=direct, mention_count=len(mentions),
+                                     self_mention=self_mention, id_mention=id_mention)
         if not self.store.record(event):
             return
         key = (actor,group_id)
         if not event['is_bot']:
             self.policy.human(key)
-        direct = kind == 'GROUP_AT_MESSAGE_CREATE'
-        # Replies may be explicit mentions in full-message mode as well.
-        direct = direct or any(str(m.get('id',''))==self.transports[actor].user_id for m in data.get('mentions',[]) if isinstance(m,dict))
         # Same speaker's text releases the image batch; images alone wait up to 60s.
         batch_key = (actor,group_id,member)
         batch = self.image_batches.get(batch_key)
@@ -114,6 +136,7 @@ class Service:
             merged_images = {a['url']:a for a in previous['attachments'] + attachments}
             batch['event'] = {**event,
                 'content':(previous['content']+'\n'+event['content'])[-12000:],
+                'reply_reference':event.get('reply_reference') or previous.get('reply_reference',''),
                 'attachments':list(merged_images.values())[:4], 'image_batch':True}
             batch['direct'] = batch['direct'] or direct
             if has_text:
@@ -128,8 +151,7 @@ class Service:
                      'ready':asyncio.Event()}
             self.image_batches[batch_key] = batch
             task = asyncio.create_task(self.image_reply(batch_key,batch,group,cfg['epoch']))
-            self.tasks.add(task)
-            task.add_done_callback(self.tasks.discard)
+            self.track_task(task,actor)
             return
         if not self.policy.allow(key,direct=direct,is_bot=event['is_bot'],settings=cfg,now=time.time()):
             return
@@ -139,8 +161,7 @@ class Service:
         if not direct:
             self.policy.candidate(key,time.time())
         task = asyncio.create_task(self.reply(actor,group,event,direct,cfg['epoch']))
-        self.tasks.add(task)
-        task.add_done_callback(self.tasks.discard)
+        self.track_task(task,actor)
 
     async def image_reply(self, batch_key, batch, group, epoch):
         actor,group_id,_ = batch_key
@@ -155,7 +176,7 @@ class Service:
             if not self.active(actor,group_id,epoch):
                 return
             event,direct = batch['event'],batch['direct']
-            if not self.policy.allow((actor,group_id),direct=direct,is_bot=event['is_bot'],settings=self.store.settings(),now=time.time()):
+            if not self.policy.allow((actor,group_id),direct=direct,is_bot=event['is_bot'],settings=self.store.settings(actor),now=time.time()):
                 return
             if not direct:
                 self.policy.candidate((actor,group_id),time.time())
@@ -171,9 +192,10 @@ class Service:
                 if not self.active(*key,epoch) or time.time()-event['created_at'] > 210:
                     return
                 # Recheck global caps after waiting behind another reply.
-                if not self.policy.allow(key,direct=direct,is_bot=event['is_bot'],settings=self.store.settings(),now=time.time(),include_candidate=False):
+                if not self.policy.allow(key,direct=direct,is_bot=event['is_bot'],settings=self.store.settings(actor),now=time.time(),include_candidate=False):
                     return
                 diag = self.diagnostics.setdefault(actor,{})
+                diag.update(reply_direct=direct, reply_started_at=time.time())
                 self.policy.started(key,direct=direct,now=time.time())
                 from external_memories import ExternalReply
                 generated = await asyncio.wait_for(self.generator(actor,group,event,self.store,direct,diag), 180)
@@ -182,7 +204,8 @@ class Service:
                 if not self.active(*key,epoch) or time.time()-event['created_at'] > 270:
                     return
                 if text:
-                    result = await self.transports[actor].send(group['group_id'],text,event['message_id'])
+                    reference = (event.get('reply_reference') or event.get('ref_id') or event['message_id']) if direct else getattr(reply,'reference_id','')
+                    result = await self.transports[actor].send(group['group_id'],text,event['message_id'],reference_id=reference)
                     self.policy.sent(key,direct=direct,is_bot=event['is_bot'],now=time.time())
                     self.last_send[actor] = time.time()
                     self.last_error.pop(actor,None)
@@ -219,18 +242,24 @@ class Service:
             # Retry missing search vectors without regenerating or duplicating memories.
             from external_memories import retry_pending_index
             for actor in list(self.transports):
+                if not self.store.settings(actor)['enabled']:
+                    continue
                 try:
-                    await retry_pending_index(actor)
-                except Exception:
-                    pass
+                    self.digest_actor = actor
+                    self.digest_task = asyncio.create_task(retry_pending_index(actor))
+                    await asyncio.gather(self.digest_task,return_exceptions=True)
+                finally:
+                    self.digest_task = None
+                    self.digest_actor = None
             for group in self.store.groups():
                 key = (group['actor'],group['group_id'])
-                if not group['enabled'] or not group['memory_enabled'] or time.time()-self.digest_attempt.get(key,0)<600:
+                cfg = self.store.settings(group['actor'])
+                if not cfg['enabled'] or not group['enabled'] or not group['memory_enabled'] or time.time()-self.digest_attempt.get(key,0)<600:
                     continue
                 rows = self.store.history(*key,limit=60,after=group['digest_cursor'],oldest=True)
                 if len(rows)<12 or time.time()-rows[-1]['created_at']<120:
                     continue
-                epoch = self.store.settings()['epoch']
+                epoch = cfg['epoch']
                 self.digest_attempt[key] = time.time()
                 # A cancelled child must not kill the periodic scheduler itself.
                 await asyncio.gather(asyncio.create_task(self.digest_group(group,rows,epoch)),return_exceptions=True)
@@ -239,6 +268,7 @@ class Service:
         from .context import summarize_group
         key = (group['actor'],group['group_id'])
         self.digest_task = asyncio.current_task()
+        self.digest_actor = group['actor']
         try:
             async with self.serial:
                 if not self.active(*key,epoch):
@@ -255,6 +285,7 @@ class Service:
             self.last_error[group['actor']] = f'群记忆整理稍后重试：{type(exc).__name__}'
         finally:
             self.digest_task = None
+            self.digest_actor = None
 
     async def drain(self):
         if self.tasks:

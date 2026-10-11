@@ -97,7 +97,7 @@ def create_app(directory=DIRECTORY):
         actors = {}
         for actor in ('aion','connor'):
             bot = transports.get(actor)
-            actors[actor] = dict(name=names[actor],model=cfg.get(actor+'_model',''),
+            actors[actor] = dict(name=names[actor],model=cfg.get(actor+'_model',''),settings=store.actor_settings(actor),
                 **(bot.status if bot else {'connected':False,'state':'未配置'}),
                 last_event=service.last_event.get(actor),last_send=service.last_send.get(actor),
                 reply_error=service.last_error.get(actor,''),context=service.diagnostics.get(actor,{}))
@@ -109,6 +109,13 @@ def create_app(directory=DIRECTORY):
             return service.configure(await request.json())
         except (ValueError,TypeError):
             raise HTTPException(400,'设置值无效')
+
+    @app.patch('/actors/{actor}/settings')
+    async def actor_settings(actor:str,request:Request):
+        try:
+            return service.configure(await request.json(),actor=actor)
+        except (ValueError,TypeError):
+            raise HTTPException(400,'角色设置值无效')
 
     @app.patch('/groups/{row_id}')
     async def update_group(row_id:int,request:Request):

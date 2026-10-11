@@ -11,6 +11,32 @@ DEFAULTS = dict(enabled=False, epoch=0, enabled_at=0, mode='respond',
                 interval_seconds=120, hourly_limit=6, total_hourly_limit=60,
                 context_messages=35, image_wait_seconds=60, bring_home=True,
                 bind_first_group=False, bound_actors=[])
+ACTOR_FIELDS = ('enabled','mode','interval_seconds','hourly_limit','total_hourly_limit',
+                'context_messages','image_wait_seconds')
+
+
+def apply_settings(current, patch):
+    if not isinstance(patch,dict):
+        raise ValueError('settings must be an object')
+    for key in ('enabled', 'bind_first_group', 'bring_home'):
+        if key in patch:
+            if type(patch[key]) is not bool:
+                raise ValueError(f'{key} must be boolean')
+            current[key] = patch[key]
+    if 'mode' in patch:
+        if patch['mode'] not in ('respond', 'natural'):
+            raise ValueError('invalid mode')
+        current['mode'] = patch['mode']
+    for key, low, high in [('interval_seconds',10,3600),('hourly_limit',1,120),('total_hourly_limit',5,120),
+                           ('context_messages',5,100),('image_wait_seconds',0,120)]:
+        if key in patch:
+            value = int(patch[key])
+            if not low <= value <= high:
+                raise ValueError(f'{key} outside {low}..{high}')
+            current[key] = value
+    current['epoch'] += 1
+    current['enabled_at'] = time.time()
+    return current
 
 
 class Store:
@@ -54,31 +80,37 @@ class Store:
         finally:
             db.close()
 
-    def settings(self):
+    def settings(self, actor=None):
         with self.db() as db:
             row = db.execute("SELECT value FROM settings WHERE key='config'").fetchone()
-        return {**DEFAULTS, **(json.loads(row[0]) if row else {})}
+        current = {**DEFAULTS, **(json.loads(row[0]) if row else {})}
+        if actor is None:
+            return current
+        own = self.actor_settings(actor, current)
+        return {**current, **own, 'enabled':current['enabled'] and own['enabled'],
+                'epoch':current['epoch']+own['epoch'],
+                'enabled_at':max(current['enabled_at'],own['enabled_at'])}
+
+    def actor_settings(self, actor, base=None):
+        if actor not in ('aion','connor'):
+            raise ValueError('unknown actor')
+        base = self.settings() if base is None else base
+        with self.db() as db:
+            row = db.execute('SELECT value FROM settings WHERE key=?',('actor:'+actor,)).fetchone()
+        # Existing installations inherit their old shared values until individually edited.
+        return {**{key:base[key] for key in ACTOR_FIELDS},'enabled':True,'epoch':0,'enabled_at':0,
+                **(json.loads(row[0]) if row else {})}
+
+    def configure_actor(self, actor, patch):
+        if not isinstance(patch,dict) or any(key not in ACTOR_FIELDS for key in patch):
+            raise ValueError('invalid actor settings')
+        current = apply_settings(self.actor_settings(actor),patch)
+        with self.db() as db:
+            db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',('actor:'+actor,json.dumps(current)))
+        return current
 
     def configure(self, patch):
-        current = self.settings()
-        for key in ('enabled', 'bind_first_group', 'bring_home'):
-            if key in patch:
-                if type(patch[key]) is not bool:
-                    raise ValueError(f'{key} must be boolean')
-                current[key] = patch[key]
-        if 'mode' in patch:
-            if patch['mode'] not in ('respond', 'natural'):
-                raise ValueError('invalid mode')
-            current['mode'] = patch['mode']
-        for key, low, high in [('interval_seconds', 10, 3600), ('hourly_limit', 1, 120), ('total_hourly_limit', 5, 120),
-                               ('context_messages',5,100), ('image_wait_seconds',0,120)]:
-            if key in patch:
-                value = int(patch[key])
-                if not low <= value <= high:
-                    raise ValueError(f'{key} outside {low}..{high}')
-                current[key] = value
-        current['epoch'] += 1
-        current['enabled_at'] = time.time()
+        current = apply_settings(self.settings(),patch)
         with self.db() as db:
             db.execute("INSERT OR REPLACE INTO settings VALUES ('config',?)", (json.dumps(current),))
         return current

@@ -129,7 +129,7 @@ async def outside_memories():
 @router.api_route('/api/qq-social/{path:path}',methods=['GET','PATCH','DELETE'])
 async def proxy(path:str,request:Request):
     import re
-    if not re.fullmatch(r'(?:status|settings|groups/\d+(?:/members/[\w-]+)?|memories/\d+)',path):
+    if not re.fullmatch(r'(?:status|settings|actors/(?:aion|connor)/settings|groups/\d+(?:/members/[\w-]+)?|memories/\d+)',path):
         raise HTTPException(404,'Not found')
     if request.method!='GET':
         origin=request.headers.get('origin')

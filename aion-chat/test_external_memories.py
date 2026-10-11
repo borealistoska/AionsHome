@@ -91,7 +91,7 @@ class ExternalMemoryTests(unittest.IsolatedAsyncioTestCase):
         class Transport:
             user_id = 'bot'
             fail = False
-            async def send(inner, group, text, message_id):
+            async def send(inner, group, text, message_id, **kwargs):
                 if inner.fail:
                     raise OSError('send failed')
                 sent.append(text)
@@ -121,7 +121,7 @@ class ExternalMemoryTests(unittest.IsolatedAsyncioTestCase):
         sent = []
         class Transport:
             user_id = 'bot'
-            async def send(inner, group, text, message_id):
+            async def send(inner, group, text, message_id, **kwargs):
                 sent.append(text)
                 return {'id':'out'}
         async def generate(*args):
