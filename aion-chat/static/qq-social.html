@@ -5,6 +5,12 @@
 <header><a href="/">← 小家</a></header>
 <section class="intro"><h1>QQ 群聊</h1><button id="power" class="power" disabled>连接中…</button></section>
 <p id="notice" role="status" aria-live="polite"></p>
+<section class="card"><details id="credentialPanel"><summary>机器人接入 <span id="credentialCount">读取中…</span></summary>
+<p class="hint">填入 QQ 开放平台的 AppID 和 AppSecret，每位单独保存，也可以只接入一位。凭据仅保存在这台小家的本地数据中。</p>
+<div id="credentialForms" class="credential-forms"></div>
+<p id="credentialNotice" class="hint" role="status" aria-live="polite"></p>
+<p class="hint">首次保存后，打开总开关，在目标群 @ 机器人完成配对。已保存的密钥不回显；AppID 不变时留空可保留原密钥。更换凭据会取消 QQ 待发送的回复。</p>
+</details></section>
 <div id="actors" class="actors"></div>
 <section class="card mode-card"><div class="row"><h2>回复方式</h2><span id="modeLabel" class="muted">连接中…</span></div>
 <div id="modeControls" class="modes" role="group" aria-label="回复方式"><button type="button" data-mode="respond" aria-pressed="false" disabled>仅 @ 回复</button><button type="button" data-mode="natural" aria-pressed="false" disabled>主动接话</button></div>

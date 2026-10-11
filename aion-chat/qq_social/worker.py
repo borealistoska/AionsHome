@@ -24,23 +24,52 @@ def create_app(directory=DIRECTORY):
     transports = {}
     service = Service(store, transports)
     token = (directory/'management.key').read_text(encoding='utf8').strip()
+    bot_jobs, applied = {}, {}
+    reload_lock = asyncio.Lock()
+    reloading = False
+
+    async def reload_credentials():
+        nonlocal applied, reloading
+        async with reload_lock:
+            credentials = json.loads((directory/'credentials.json').read_text(encoding='utf8'))
+            changed = [actor for actor in ('aion','connor') if applied.get(actor)!=credentials.get(actor)]
+            if not changed:
+                return
+            reloading = True
+            try:
+                # Stop pending sends before waiting for old WebSockets to close.
+                service.cancel_pending()
+                await service.drain()
+                for actor in changed:
+                    job = bot_jobs.pop(actor,None)
+                    if job:
+                        job.cancel()
+                        await asyncio.gather(job,return_exceptions=True)
+                    bot = transports.pop(actor,None)
+                    if bot:
+                        await bot.close()
+                for actor in changed:
+                    if actor not in credentials:
+                        continue
+                    async def event(kind,data,role=actor):
+                        if not reloading:
+                            await service.ingest(role,kind,data)
+                    bot = transports[actor] = BotTransport(credentials[actor],event)
+                    bot_jobs[actor] = asyncio.create_task(bot.run())
+                    service.last_error.pop(actor,None)
+                applied = credentials
+            finally:
+                reloading = False
 
     @asynccontextmanager
     async def lifespan(app):
-        credentials = json.loads((directory/'credentials.json').read_text(encoding='utf8'))
-        jobs = []
-        for actor in ('aion','connor'):
-            if actor not in credentials:
-                continue
-            async def event(kind, data, role=actor):
-                await service.ingest(role,kind,data)
-            bot = transports[actor] = BotTransport(credentials[actor],event)
-            jobs.append(asyncio.create_task(bot.run()))
-        jobs.append(asyncio.create_task(service.digest_groups()))
+        await reload_credentials()
+        digest_job = asyncio.create_task(service.digest_groups())
         (directory/'worker.pid').write_text(str(os.getpid()),encoding='ascii')
         try:
             yield
         finally:
+            jobs = [*bot_jobs.values(),digest_job]
             for job in jobs:
                 job.cancel()
             await service.close()
@@ -55,6 +84,11 @@ def create_app(directory=DIRECTORY):
         if not token or not hmac.compare_digest(request.headers.get('authorization',''),'Bearer '+token):
             return JSONResponse({'detail':'Unauthorized'},status_code=401)
         return await call_next(request)
+
+    @app.post('/reload-credentials')
+    async def reload_bots():
+        await reload_credentials()
+        return {'ok':True}
 
     @app.get('/status')
     async def status():

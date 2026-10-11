@@ -218,7 +218,7 @@ class Service:
                 continue
             # Retry missing search vectors without regenerating or duplicating memories.
             from external_memories import retry_pending_index
-            for actor in self.transports:
+            for actor in list(self.transports):
                 try:
                     await retry_pending_index(actor)
                 except Exception:

@@ -464,5 +464,150 @@ class QQManagementTests(unittest.TestCase):
             self.assertNotIn('private-management-key',client.get('/status').text)
 
 
+class QQCredentialSetupTests(unittest.TestCase):
+    def setUp(self):
+        from unittest.mock import patch, AsyncMock
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from routes import qq_social
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.directory = Path(self.tmp.name)
+        for target, value in (
+            ('routes.qq_social.DIRECTORY', self.directory),
+            ('qq_social.context.home_config', lambda: ({}, {}, {}, {'aion':'角色甲','connor':'角色乙'})),
+            ('qq_social.transport.BotTransport.authorize', AsyncMock()),
+        ):
+            mocked = patch(target, value)
+            mocked.start()
+            self.addCleanup(mocked.stop)
+        app = FastAPI()
+        app.include_router(qq_social.router)
+        self.client = TestClient(app)
+
+    def save(self, **body):
+        return self.client.patch('/api/qq-social/credentials', json=body,
+                                 headers={'origin':'http://testserver'})
+
+    def test_first_setup_supports_one_bot_and_never_returns_secrets(self):
+        import json
+        from unittest.mock import patch, AsyncMock
+        from qq_social.store import Store
+        with patch('routes.qq_social.connect_saved_credentials', AsyncMock(return_value='connecting'), create=True):
+            before = self.client.get('/api/qq-social/credentials')
+            self.assertEqual(before.status_code, 200)
+            self.assertEqual(before.json()['actors']['aion']['name'], '角色甲')
+            response = self.save(actor='aion', app_id='123456', secret='private-setup-secret')
+            self.assertEqual(response.status_code, 200)
+        saved = json.loads((self.directory/'credentials.json').read_text())
+        self.assertEqual(saved, {'aion':{'app_id':'123456','secret':'private-setup-secret'}})
+        self.assertTrue((self.directory/'management.key').is_file())
+        self.assertFalse(Store(self.directory/'social.db').settings()['enabled'])
+        self.assertTrue(Store(self.directory/'social.db').settings()['bind_first_group'])
+        public = self.client.get('/api/qq-social/credentials')
+        self.assertTrue(public.json()['actors']['aion']['configured'])
+        self.assertFalse(public.json()['actors']['connor']['configured'])
+        self.assertNotIn('private-setup-secret', public.text + response.text)
+
+    def test_invalid_secret_or_cross_origin_does_not_replace_working_config(self):
+        import json
+        from unittest.mock import patch, AsyncMock
+        existing = {'aion':{'app_id':'123456','secret':'working-secret'}}
+        (self.directory/'credentials.json').write_text(json.dumps(existing))
+        response = self.client.patch('/api/qq-social/credentials', json={'actor':'aion','app_id':'999','secret':'bad'},
+                                     headers={'origin':'https://elsewhere.invalid'})
+        self.assertEqual(response.status_code,403)
+        with patch('qq_social.transport.BotTransport.authorize', AsyncMock(side_effect=ValueError('sensitive provider response'))):
+            response = self.save(actor='aion', app_id='123456', secret='wrong-secret')
+        self.assertEqual(response.status_code,400)
+        self.assertNotIn('sensitive',response.text)
+        self.assertEqual(json.loads((self.directory/'credentials.json').read_text()),existing)
+        self.assertEqual(self.save(actor='aion', app_id='different-id', secret='').status_code,400)
+
+    def test_blank_secret_keeps_existing_bot_and_settings(self):
+        import json
+        from unittest.mock import patch, AsyncMock
+        from qq_social.store import Store
+        existing = {'aion':{'app_id':'123456','secret':'working-secret'},
+                    'connor':{'app_id':'654321','secret':'other-secret'}}
+        (self.directory/'credentials.json').write_text(json.dumps(existing))
+        Store(self.directory/'social.db').configure({'enabled':False,'interval_seconds':345})
+        with patch('routes.qq_social.connect_saved_credentials', AsyncMock(return_value='connecting'), create=True):
+            response = self.save(actor='aion', app_id='123456', secret='')
+        self.assertEqual(response.status_code,200)
+        self.assertEqual(json.loads((self.directory/'credentials.json').read_text()),existing)
+        self.assertEqual(Store(self.directory/'social.db').settings()['interval_seconds'],345)
+        self.assertFalse(Store(self.directory/'social.db').settings()['enabled'])
+
+    def test_worker_reloads_changed_credentials_without_restarting_home(self):
+        import json
+        from unittest.mock import patch
+        from fastapi.testclient import TestClient
+        from qq_social.worker import create_app
+        from qq_social.service import Service
+        created = []
+        services, pending, drained_at_close = [], [], []
+        def capture_service(*args):
+            service = Service(*args)
+            services.append(service)
+            return service
+        async def pending_reply():
+            await asyncio.Future()
+        async def queue_reply():
+            task = asyncio.create_task(pending_reply())
+            pending.append(task)
+            services[0].tasks.add(task)
+            task.add_done_callback(services[0].tasks.discard)
+            await asyncio.sleep(0)
+        class FakeBot:
+            def __init__(self, credentials, event):
+                self.credentials = credentials
+                self.closed = False
+                created.append(self)
+            async def run(self):
+                await asyncio.Future()
+            async def close(self):
+                self.closed = True
+                drained_at_close.append(all(task.done() for task in pending))
+        (self.directory/'management.key').write_text('test-management')
+        path = self.directory/'credentials.json'
+        path.write_text(json.dumps({'aion':{'app_id':'123','secret':'first'}}))
+        with patch('qq_social.worker.BotTransport', FakeBot), patch('qq_social.worker.Service',capture_service), TestClient(create_app(self.directory)) as client:
+            self.assertEqual(len(created),1)
+            client.portal.call(queue_reply)
+            path.write_text(json.dumps({'aion':{'app_id':'123','secret':'changed'}}))
+            self.assertEqual(client.post('/reload-credentials').status_code,401)
+            response = client.post('/reload-credentials', headers={'authorization':'Bearer test-management'})
+            self.assertEqual(response.status_code,200)
+            self.assertEqual(len(created),2)
+            self.assertTrue(created[0].closed)
+            self.assertTrue(drained_at_close[0], 'Pending replies must stop before old connection closes')
+            self.assertEqual(created[1].credentials['secret'],'changed')
+            client.post('/reload-credentials', headers={'authorization':'Bearer test-management'})
+            self.assertEqual(len(created),2)
+
+    def test_adding_bot_during_memory_retry_keeps_digest_loop_alive(self):
+        from unittest.mock import patch
+        from qq_social.store import Store
+        from qq_social.service import Service
+        async def exercise():
+            store = Store(self.directory/'digest.db')
+            store.configure({'enabled':True})
+            transports = {'aion':object()}
+            service = Service(store,transports)
+            sleeps = 0
+            async def sleep(_):
+                nonlocal sleeps
+                sleeps += 1
+                if sleeps > 1:
+                    raise asyncio.CancelledError()
+            async def retry(actor):
+                transports['connor'] = object()
+            with patch('qq_social.service.asyncio.sleep',sleep), patch('external_memories.retry_pending_index',retry):
+                with self.assertRaises(asyncio.CancelledError):
+                    await service.digest_groups()
+        asyncio.run(exercise())
+
+
 if __name__ == '__main__':
     unittest.main()

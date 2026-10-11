@@ -279,9 +279,9 @@ npm install -g @google/gemini-cli
 
 
 
-## 🚀 使用 Antigravity 管线（可选，免费额度）
+## 使用 Antigravity CLI 管线
 
-Antigravity 是 Google 的 AI agent 平台，通过它的 CLI 工具可以免费使用 Gemini 3.5 Flash、Gemini 3.1 Pro、Claude Opus 4.6 等模型。**不需要 API Key**，只需要一个 Google 账号。
+新版接入使用官方 agy 的 stream-json 输入输出及聊天专用 Agent，不再抓取控制台或解析私有会话数据库。模型和额度以当前登录账号的官方目录为准。建议使用最新版，精简 Agent 需要 agy 1.2.1 或更高版本。
 
 ### 安装 Antigravity CLI
 
@@ -291,34 +291,34 @@ Antigravity 是 Google 的 AI agent 平台，通过它的 CLI 工具可以免费
 irm https://antigravity.google/cli/install.ps1 | iex
 ```
 
-装完后关闭 PowerShell 重新打开，输入 `agy --version` 确认安装成功。
+装完后输入 `agy --version` 确认安装成功；已有安装可运行 `agy update` 更新。
 
 ### 登录
 
-1. 在 PowerShell 里输入 `agy` 回车
-2. 它会弹出浏览器让你登录 Google 账号（和平时登 Gmail 一样）
+1. 在项目根目录运行 `powershell -ExecutionPolicy Bypass -File .\scripts\agy_login.ps1`，进入专用目录的官方登录界面；已有账号时先在交互界面输入 `/logout`
+2. 自行确认专用目录的信任选择，在浏览器中明确选择希望使用的 Google 账号授权
 3. 授权完成后回到终端，看到聊天界面就说明登录成功了
-4. 按 `Ctrl+C` 退出 agy
+4. 输入 `/exit` 退出 agy。不能用 `agy -p /logout` 换号，CLI 会拒绝
 
-> 💡 登录一次就行，之后不需要重复登录。
+> 登录凭据由官方 CLI 保存和复用；AionsHome 不读取、复制或代理 OAuth token。
 
 ### 在 Aion Chat 中使用
 
-1. 启动 Aion Chat 后，在聊天窗口的**模型选择**下拉菜单里选择 **「Antigravity」**
+1. 重启 Aion Chat 并刷新聊天页面，在模型下拉菜单选择 `AGY · 模型名称`；默认只启用 Gemini 3.8 Flash (High) 和 Claude Opus 5.5 (Medium)
 2. 发消息就行了，它会通过 agy CLI 帮你调用模型
 
 ### 切换模型
 
-Antigravity 支持多个模型，默认是 Gemini 3.5 Flash。如果想换模型：
+模型下拉菜单来自官方 `agy models` 的 slug/名称列表，只展示 `aion-chat/config.py` 中 `ANTIGRAVITY_ENABLED_MODELS` 未注释的项；想恢复其他模型，取消对应 slug 的注释后重启服务器、刷新页面。每次调用明确使用所选模型的真实 slug。目录缓存五分钟，并保存在 `aion-chat/data/antigravity_models.json`，重启后仍可恢复。换账号后重启服务并刷新页面。`AGY（默认）` 入口已在 `BUILTIN_MODELS` 中注释；若自行恢复该入口，想修改其底层模型，可使用以下 CLI 操作：
 
 1. 在 PowerShell 里输入 `agy` 进入交互模式
 2. 输入 `/model` 查看和切换可用模型
-3. 选好后退出（`Ctrl+C`），之后 Aion Chat 走 Antigravity 管线就会使用你选的模型
+3. 选好后 `/exit`；小家的 `AGY（默认）` 会使用该默认模型，明确选择的其他 AGY 模型不受影响
 
 ### 注意事项
 
 - ⚠️ 安装和使用都**需要梯子**（agy 连接 Google 服务）
-- ⚠️ 免费额度有限制，日常聊天够用，频繁刷可能触发限流
+- 额度和可用模型取决于会员及账号状态。管线单请求并发，不自动绕过权限或切换账号
 - ⚠️ 如果提示「未登录」，重新在 PowerShell 里运行 `agy` 登录一下就好
 
 
@@ -331,4 +331,13 @@ Antigravity 支持多个模型，默认是 Gemini 3.5 Flash。如果想换模型
 
 第四步：输入 /exit 退出 agy。
 
-完成。 你的选择会保存在 Google 服务器上，之后所有 agy --print 调用（包括我们项目里的 Antigravity 管线）都会自动使用新模型。不需要重启服务器。
+这只修改 CLI 默认模型。小家选中的 `AGY · 模型名称` 会通过 --model 明确指定模型，不会被全局默认设置覆盖。
+
+### 精简陪伴配置与账号边界
+
+`aion-chat/prompts/antigravity_companion.md` 使用官方 `excludeDefaultComponents: true`、`inheritCustomizations: false`、`tools: []`，排除大部分默认开发提示与工具，保留应用提供的人设、记忆及文本能力协议。1.2.16 的初始化 tools 仍列出全局工具目录，不能据此判断本次 Agent 的工具集；管线核对 Agent 名称，出现实际原生工具步骤时会终止调用。官方运行时可能保留任务管理组件，因此不承诺完全零工具。同提示、同模型的短回复对照，默认 Agent 输入 12,042 tokens，陪伴配置为 673（约少 94%；实际长对话节省比例随应用上下文而变）。文字通过官方 stdin/stdout 传输；图片走现有哨兵代看，语音走已有转写，尚未启用原生媒体传输。
+
+**AGY 聊天禁写权限**：官方 CLI 的 `~/.gemini/antigravity-cli/settings.json` 必须设置 `"toolPermission": "strict"`，并在 `permissions.deny` 中保留 `write_file(*)`、`command(*)`、`unsandboxed(*)`、`mcp(*)`、`execute_url(*)`。这些拒绝规则也作用于单独打开的 agy 终端，阻止模型直接改文件、执行命令或通过外部工具写入；CLI 自己保存登录状态、日志和会话仍正常。小家每次创建 AGY 进程前都会检查上述配置，缺少任何一项就停止调用。这是官方工具权限限制，不是整个 CLI 进程的操作系统只读隔离。配置改动后自行重启小家服务器。
+
+
+[官方 Headless 文档](https://www.antigravity.google/docs/cli/headless/)支持脚本驱动 CLI，但[服务条款](https://antigravity.google/terms)和[FAQ](https://antigravity.google/docs/faq)仍限制第三方软件使用 Antigravity 登录访问服务。官方 CLI 和独立账号不能保证自建聊天管线不被判定违规；账号安全优先时，使用 Google AI Studio 或 Gemini Enterprise API key 对应的正式接口。

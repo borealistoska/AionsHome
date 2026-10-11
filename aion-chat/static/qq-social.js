@@ -7,6 +7,40 @@ const date=value=>value?new Date(value*1000).toLocaleString('zh-CN',{hour12:fals
 const folded=value=>{const text=String(value||'');return text.length>140?`<details class="long"><summary>${esc(text.slice(0,90))}…</summary><p>${esc(text)}</p><button type="button" data-collapse>收起</button></details>`:`<p>${esc(text)}</p>`;};
 function notice(text,error=false){$('notice').textContent=text;$('notice').classList.toggle('error',error);}
 async function api(path,method='GET',body){const res=await fetch('/api/qq-social/'+path,{method,headers:{'Content-Type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)})});const data=await res.json();if(!res.ok)throw Error(data.detail||'请求失败');return data;}
+function credentialNotice(text,error=false){$('credentialNotice').textContent=text;$('credentialNotice').classList.toggle('error',error);}
+async function loadCredentials(initial=false,updatedActor=null){
+ const data=await api('credentials');
+ const count=Object.values(data.actors).filter(a=>a.configured).length;
+ $('credentialCount').textContent=count?`${count} 位已配置`:'尚未配置';
+ if(initial&&!count)$('credentialPanel').open=true;
+ for(const [actor,a] of Object.entries(data.actors)){
+  let form=$('credentialForms').querySelector(`[data-actor="${actor}"]`);
+  if(!form){
+   $('credentialForms').insertAdjacentHTML('beforeend',`<form class="credential-form" data-actor="${actor}" autocomplete="off"><h3></h3><label>AppID<input name="app_id" type="text" maxlength="64" inputmode="numeric" autocomplete="off" required></label><label>AppSecret<input name="secret" type="password" maxlength="2048" autocomplete="new-password" spellcheck="false"></label><button type="submit">保存并连接</button></form>`);
+   form=$('credentialForms').querySelector(`[data-actor="${actor}"]`);
+   form.addEventListener('submit',saveCredential);
+  }
+  form.querySelector('h3').textContent=a.name+(a.configured?' · 已配置':' · 未配置');
+  if(initial||actor===updatedActor)form.elements.app_id.value=a.app_id||'';
+  form.elements.secret.placeholder=a.configured?'已保存，留空保持原密钥':'填写该机器人的 AppSecret';
+ }
+}
+async function saveCredential(event){
+ event.preventDefault();if(busy)return;
+ const form=event.currentTarget, actor=form.dataset.actor;
+ const payload={actor,app_id:form.elements.app_id.value.trim(),secret:form.elements.secret.value.trim()};
+ busy=true;form.querySelector('button').disabled=true;
+ credentialNotice('正在验证并保存…');
+ try{
+  const result=await api('credentials','PATCH',payload);
+  form.elements.secret.value='';
+  await loadCredentials(false,actor);
+  if(result.connection==='restart_required')credentialNotice('凭据已保存。当前 QQ 服务还是旧版本，请重启小家与 QQ 一次；之后可直接在这里保存生效。',true);
+  else if(result.connection==='retry_required')credentialNotice('凭据已保存，连接尚未完成。请检查连接状态，稍后再点保存并连接。',true);
+  else credentialNotice('已保存，正在连接 QQ。在线后打开总开关，在目标群 @ 机器人。');
+ }catch(error){credentialNotice(error.message,true);}
+ finally{form.elements.secret.value='';busy=false;form.querySelector('button').disabled=false;await refresh();}
+}
 async function refresh(){
  if(busy)return;
  try{
@@ -23,7 +57,7 @@ async function refresh(){
   $('bringHome').disabled=state.settings.bring_home===undefined;
   if($('outsidePanel').open)await refreshOutside();
   if(!settingsDirty){const f=$('settings');for(const k of settingFields)f.elements[k].value=state.settings[k]??({context_messages:35,image_wait_seconds:60}[k]);}
-  $('groups').innerHTML=state.groups.length?state.groups.map(g=>`<div class="group"><div class="row"><div><strong>${esc(g.name||'朋友群 · '+g.group_id.slice(-6))}</strong><br><small>${esc(state.actors[g.actor]?.name||g.actor)} · ${g.full_messages?'可见普通群消息':'等待普通群消息'}</small></div><button data-detail="${g.id}">聊天与记忆</button></div><div class="switches"><label><input type="checkbox" data-group="${g.id}" data-field="enabled" ${g.enabled?'checked':''}> 参与</label><label><input type="checkbox" data-group="${g.id}" data-field="memory_enabled" ${g.memory_enabled?'checked':''}> 积累记忆</label></div></div>`).join(''):'<p class="empty">在群里分别 @ 两位 AI，即可完成首次配对。</p>';
+  $('groups').innerHTML=state.groups.length?state.groups.map(g=>`<div class="group"><div class="row"><div><strong>${esc(g.name||'朋友群 · '+g.group_id.slice(-6))}</strong><br><small>${esc(state.actors[g.actor]?.name||g.actor)} · ${g.full_messages?'可见普通群消息':'等待普通群消息'}</small></div><button data-detail="${g.id}">聊天与记忆</button></div><div class="switches"><label><input type="checkbox" data-group="${g.id}" data-field="enabled" ${g.enabled?'checked':''}> 参与</label><label><input type="checkbox" data-group="${g.id}" data-field="memory_enabled" ${g.memory_enabled?'checked':''}> 积累记忆</label></div></div>`).join(''):'<p class="empty">在目标群 @ 已接入的 AI，即可完成首次配对。</p>';
   if(selected)await detail(selected);
  }catch(e){connectionError=true;notice(e.message,true);$('power').disabled=true;for(const b of $('modeControls').querySelectorAll('button'))b.disabled=true;}
 }
@@ -57,4 +91,5 @@ $('settings').onsubmit=e=>{e.preventDefault();const f=e.currentTarget;action(asy
 $('groups').onchange=e=>{const t=e.target;if(t.dataset.group)action(()=>api('groups/'+t.dataset.group,'PATCH',{[t.dataset.field]:t.checked}));};
 $('groups').onclick=e=>{const b=e.target.closest('[data-detail]');if(b)detail(b.dataset.detail).catch(e=>notice(e.message,true));};
 $('detail').onclick=e=>{const collapse=e.target.closest('[data-collapse]');if(collapse)collapse.closest('details').open=false;const d=e.target.closest('[data-delete]');if(d)action(()=>api('memories/'+d.dataset.delete,'DELETE'));const m=e.target.closest('[data-member]');if(m){const alias=prompt('给这位群成员的备注名',m.dataset.alias);if(alias===null)return;const owner=confirm('这位是你本人（小家的用户）吗？\n确定：标记为你；取消：普通朋友。');action(()=>api('groups/'+selected+'/members/'+encodeURIComponent(m.dataset.member),'PATCH',{alias,is_owner:owner}));}};
+loadCredentials(true).catch(()=>{$('credentialCount').textContent='暂不可用';credentialNotice('接入设置未加载。若刚更新代码，请重启小家后刷新页面；仍失败请检查服务。',true);});
 refresh();setInterval(()=>{if(!document.hidden)refresh();},8000);
