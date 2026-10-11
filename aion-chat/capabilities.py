@@ -54,8 +54,8 @@ CATEGORY_LABELS = {
 
 CAPABILITY_DEFS: list[CapabilityDef] = [
     CapabilityDef(
-        "post_sentinel", "后置哨兵：画像与当前状态", "context",
-        "后台维护两个 AI 共享的用户画像和活动状态。关闭后停止整理，并停止向聊天与巡逻注入这些资料；已保存内容仍可查看编辑。",
+        "post_sentinel", "后置哨兵：近期生活与待办", "context",
+        "后台维护两个 AI 共享的近期生活与待办和活动状态。关闭后停止整理，并停止向聊天与巡逻注入这些资料；已保存内容仍可查看编辑。",
         default_enabled=True,
     ),
     CapabilityDef("expressive_voice", "主动语音", "media", "", default_enabled=False),

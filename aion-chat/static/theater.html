@@ -449,13 +449,6 @@ function escHtml(s) {
 
 /* ── 初始化 ── */
 async function init() {
-  // 加载模型列表
-  try {
-    const m = await api('GET', '/api/models');
-    models = Array.isArray(m) ? m.map(x => x.key || x) : [];
-  } catch(e) { models = []; }
-  populateModelSelects();
-
   var savedCtx = localStorage.getItem('theater_context_limit');
   if (savedCtx) { $('contextSlider').value = savedCtx; $('contextVal').textContent = savedCtx; }
   var savedTemp = localStorage.getItem('theater_temperature');
@@ -465,28 +458,34 @@ async function init() {
   var savedVoice = localStorage.getItem('theater_tts_voice');
   if (savedVoice) ttsVoice = savedVoice;
 
-  // 加载 TTS 音色列表
-  await loadTTSVoices();
-
-  // 加载角色
-  personas = await api('GET', '/api/theater/personas');
-  renderPersonaList();
+  // 设置和外部音色服务在后台加载，不挡住故事列表和正文。
+  api('GET', '/api/models').then(m => {
+    models = Array.isArray(m) ? m.map(x => x.key || x) : [];
+    populateModelSelects();
+  }).catch(() => {});
+  loadTTSVoices();
+  api('GET', '/api/theater/personas').then(data => {
+    personas = data;
+    renderPersonaList();
+  }).catch(() => {});
 
   // 加载对话列表
   conversations = await api('GET', '/api/theater/conversations');
   renderConvList();
 
-  // 自动选择第一个对话
-  if (conversations.length) selectConv(conversations[0].id);
-
   // WebSocket
   connectWS();
+
+  // 等待正文选择完成，避免小说加载中被误当作空剧场。
+  if (conversations.length) await selectConv(conversations[0].id);
 }
 
 /* ── 模型下拉 ── */
-function populateModelSelects() {
-  const opts = models.map(m => `<option value="${m}">${m}</option>`).join('');
+function populateModelSelects(selected = $('modelSelect').value || conversations.find(c => c.id === currentConvId)?.model || '') {
+  const choices = selected && !models.includes(selected) ? [...models, selected] : models;
+  const opts = choices.map(m => `<option value="${escHtml(m)}">${escHtml(m)}</option>`).join('');
   $('modelSelect').innerHTML = opts;
+  if (selected) $('modelSelect').value = selected;
   updateTheaterSelectionSummary();
 }
 
@@ -669,7 +668,7 @@ async function selectConv(id) {
   const conv = conversations.find(c => c.id === id);
   if (conv) {
     $('chatTitle').textContent = conv.title;
-    if (conv.model) $('modelSelect').value = conv.model;
+    if (conv.model) populateModelSelects(conv.model);
     currentPersonaId = conv.persona_id || "";
     renderPersonaList();
   }
@@ -685,7 +684,7 @@ async function newConversation() {
   if (_creating) return;
   _creating = true;
   try {
-    const model = $('modelSelect').value;
+    const model = $('modelSelect').value || undefined;
     const conv = await api('POST', '/api/theater/conversations', { title: '新剧场', persona_id: currentPersonaId, model });
     if (!conversations.find(c => c.id === conv.id)) conversations.unshift(conv);
     renderConvList();
@@ -2004,8 +2003,11 @@ function closeSidebar() {
 }
 
 /* ── 启动 ── */
+document.addEventListener('DOMContentLoaded', () => {
+  try { if (window.frameElement) window.parent.AionSubPageNavigation?.ready(window.frameElement); } catch (_) {}
+}, { once: true });
 </script>
 <script src="/static/theater-follow.js?v=20260917-reading-progress"></script>
-<script src="/static/theater-studio.js?v=20260919-page-confirm"></script>
+<script src="/static/theater-studio.js?v=20261009-startup"></script>
 </body>
 </html>

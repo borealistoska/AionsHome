@@ -689,12 +689,12 @@ body[data-theme="light"] .transport-mode-btn.is-active {
       <summary>
         <div class="summary-title">
           <strong>实时聊天传输模式</strong>
-          <span id="modelTransportModeSummary">按模型独立选择旧版保守模式或安全实时流式</span>
+          <span id="modelTransportModeSummary">所有模型统一使用安全实时流式</span>
         </div>
         <span class="summary-chevron">›</span>
       </summary>
       <div class="card-body">
-        <p class="hint">旧版保守模式使用原来的 120 字隔离；安全实时流式只建议用于结构化流稳定的线路，随时可以切回。</p>
+        <p class="hint">所有线路（包括新增模型）自动使用实时流式。日常回复最多 3000 字符，小剧场使用独立额度；仅对明显异常或持续的大段重复自动停止，也可以随时手动停止。</p>
         <div id="modelTransportModeList" class="route-list"></div>
       </div>
     </details>
@@ -950,42 +950,11 @@ function makeRouteId() {
 
 function renderModelTransportModes() {
   var list = $("modelTransportModeList");
-  if (!list) return;
-  var configurableRows = modelTransportRows.map(function(row, index) {
-    return { row: row, index: index };
-  }).filter(function(entry) {
-    return entry.row && entry.row.supports_safe_live === true;
-  });
-  var summary = $("modelTransportModeSummary");
-  if (summary) {
-    summary.textContent = configurableRows.length
-      ? configurableRows.length + " 条可配置线路 · 默认收起，按需展开"
-      : "当前没有支持安全实时流式的模型";
-  }
-  if (!configurableRows.length) {
-    list.innerHTML = '<div class="empty-route">当前没有支持安全实时流式的模型。</div>';
-    return;
-  }
-  list.innerHTML = configurableRows.map(function(entry) {
-    var row = entry.row;
-    var index = entry.index;
-    var mode = row.transport_mode === "safe_live" ? "safe_live" : "legacy";
-    return '<div class="model-card">' +
-      '<div class="model-card-head"><span class="model-index">' + escHtml(row.key) + '</span></div>' +
-      '<div class="transport-mode-options" role="group" aria-label="' + escAttr(row.key) + ' 的实时聊天传输模式">' +
-        '<button class="transport-mode-btn ' + (mode === "legacy" ? "is-active" : "") + '" type="button" aria-pressed="' + (mode === "legacy" ? "true" : "false") + '" onclick="modelTransportRows[' + index + '].transport_mode=\'legacy\';renderModelTransportModes()">旧版保守模式</button>' +
-        '<button class="transport-mode-btn ' + (mode === "safe_live" ? "is-active" : "") + '" type="button" aria-pressed="' + (mode === "safe_live" ? "true" : "false") + '" onclick="modelTransportRows[' + index + '].transport_mode=\'safe_live\';renderModelTransportModes()">安全实时流式</button>' +
-      '</div>' +
-    '</div>';
-  }).join("");
+  if (list) list.innerHTML = '<div class="empty-route">已统一启用，无需逐个设置。</div>';
 }
 
 function collectModelTransportModes() {
-  var modes = {};
-  modelTransportRows.forEach(function(row) {
-    if (row && row.key) modes[row.key] = row.supports_safe_live === true && row.transport_mode === "safe_live" ? "safe_live" : "legacy";
-  });
-  return modes;
+  return {}; // Retire historical per-model switches on the next settings save.
 }
 
 function newCustomModel() {

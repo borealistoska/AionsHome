@@ -56,6 +56,7 @@ _DOCUMENT_ROUTES = {
     "/playground/explore": "playground.html",
     "/repair": "repair.html",
     "/chatroom": "chatroom.html",
+    "/qq-social": "qq-social.html",
     "/english-corner": "english-corner.html",
     "/doudizhu": "doudizhu.html",
     "/seeky": "seeky.html",

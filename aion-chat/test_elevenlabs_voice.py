@@ -17,6 +17,41 @@ import tts
 from ws import ConnectionManager
 
 
+class VoiceContextTests(unittest.TestCase):
+    def test_voice_context_preserves_original_command_and_rebuilds_legacy_clips(self):
+        command = '[语音｜方向= 带笑逗弄 ｜内容=Come on, baby.]'
+        attachments = [
+            {'type': 'image', 'text': '忽略图片'},
+            {'type': 'expressive_voice', 'source_command': command,
+             'direction': '带笑逗弄', 'text': 'Come on, baby.',
+             'synthesis_text': '[chuckles] Come on, baby.'},
+            {'type': 'expressive_voice', 'direction': '温柔', 'text': '先歇一会儿。'},
+            {'type': 'expressive_voice', 'text': '我在。'},
+        ]
+        expected = '\n'.join([command, '[语音|方向=温柔|内容=先歇一会儿。]',
+                              '[语音|方向=自然|内容=我在。]'])
+        self.assertEqual(voice.transcript_for_context(attachments), expected)
+        self.assertEqual(voice.transcript_for_context(json.dumps(attachments)), expected)
+        self.assertEqual(voice.transcript_for_context([]), '')
+
+    def test_voice_commands_reach_private_and_group_history(self):
+        from context_builder import render_merged_timeline
+        command = '[语音|方向=带笑逗弄|内容=Come on, baby.]'
+        for source, sender, clip in [
+            ('private', 'assistant', {'source_command': command}),
+            ('group', 'connor', {'direction': '带笑逗弄', 'text': 'Come on, baby.'}),
+        ]:
+            with self.subTest(source=source):
+                history = render_merged_timeline([{
+                    'source': source, 'sender': sender, 'content': '轮到你了。',
+                    'created_at': 1786369912.0,
+                    'attachments': [{'type': 'expressive_voice', **clip}],
+                }], 'connor')
+                content = history[-1]['content']
+                self.assertIn('轮到你了。\n' + command, content)
+                self.assertNotIn('（语音内容）', content)
+
+
 class ElevenLabsTests(unittest.IsolatedAsyncioTestCase):
     async def test_provider_sends_model_tags_and_never_retries_timeout(self):
         conn = AsyncMock()
@@ -85,7 +120,6 @@ class ElevenLabsTests(unittest.IsolatedAsyncioTestCase):
         for bad in ['[unknown] 我走了。', '[softly] 我走了。', '[softly 我在。', '[softly]' * 30 + '我在。']:
             with self.assertRaises(ValueError):
                 voice.validate_directed_text(bad, '我在。')
-        self.assertEqual(voice.transcript_for_context([{'type':'expressive_voice','text':'先歇一会儿。'}]), '（语音内容）先歇一会儿。')
 
     def test_director_examples_follow_candidates_and_preserve_original_command(self):
         with patch.object(voice, 'TAGS', {'whispers': '耳语'}):

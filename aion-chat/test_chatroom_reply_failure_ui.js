@@ -47,6 +47,7 @@ function harness() {
   };
   vm.createContext(context);
   for (const [name, next] of [
+    ['crCancelTTSMessage', 'function crSuppressTTSMsg'],
     ['crRequireModels', 'let pendingAttachments'],
     ['endStreamingBubble', 'const crMemoryRecordMsgIds'],
     ['crHandleReplyFailure', 'function handleSSE'],

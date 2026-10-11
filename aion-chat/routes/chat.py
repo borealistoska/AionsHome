@@ -17,7 +17,7 @@ from config import DEFAULT_MODEL, MODELS, load_worldbook, SETTINGS, UPLOADS_DIR,
 from database import get_db
 from ws import manager
 from reply_timing import model_started
-from generation_control import (cancellable, cancel_generation, generation_status, GenerationQueue, spawn_generation_task)
+from generation_control import (current_generation, cancellable, cancel_generation, generation_status, GenerationQueue, spawn_generation_task)
 from cancelled_reply import save_cancelled_replies
 from active_window_state import record_aion_private_active
 from ai_providers import stream_ai, CLI_STATUS_PREFIX, with_current_device_context
@@ -182,6 +182,7 @@ async def _insert_private_ability_block(
         user_name,
         whisper_mode=whisper_mode,
         model_key=model_key,
+        profile_query=next((m.get('content', '') for m in reversed(history) if m.get('role') == 'user'), ''),
     )
     if ability_block:
         history.insert(cap_idx + inject_offset, {"role": "user", "content": ability_block})
@@ -392,6 +393,27 @@ async def _consume_chat_realtime_stream(
         outcome.used_fallback,
         outcome.manual_retry_required,
     )
+
+
+async def _save_stopped_chat_reply(conv_id, msg_id, visible_text, result, queue):
+    """Persist the checked prefix without executing its unfinished commands."""
+    notice = result.notice or "回复已停止，可重试。"
+    content = f"{visible_text.strip()}\n\n[{notice}]".strip()
+    now = time.time()
+    async with get_db() as db:
+        await db.execute(
+            "INSERT INTO messages (id, conv_id, role, content, created_at) VALUES (?,?,?,?,?)",
+            (msg_id, conv_id, "assistant", content, now),
+        )
+        await db.execute("UPDATE conversations SET updated_at=? WHERE id=?", (now, conv_id))
+        await db.commit()
+    scope = current_generation()
+    if scope and msg_id in scope.partials:
+        scope.partials[msg_id]["saved"] = True
+    message = {"id": msg_id, "conv_id": conv_id, "role": "assistant",
+               "content": content, "created_at": now, "attachments": []}
+    await queue.put({"type": "stream_error", "content": notice, "message": message})
+    await manager.broadcast({"type": "msg_created", "data": message})
 
 
 _AI_ERROR_PREFIXES = (
@@ -1500,7 +1522,7 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
                 tts_streamer=tts_streamer,
             )
             if manual_retry:
-                await _q.put({"type": "stream_error", "content": "回复连接异常，可重试"})
+                await _save_stopped_chat_reply(conv_id, ai_msg_id, visible_text, stream_result, _q)
                 return
             full_text = stream_result.committed_text
             safety_notice = stream_result.notice
@@ -2165,7 +2187,7 @@ async def send_message(conv_id: str, body: MsgCreate):
                 tts_streamer=tts_streamer,
             )
             if manual_retry:
-                await _q.put({"type": "stream_error", "content": "回复连接异常，可重试"})
+                await _save_stopped_chat_reply(conv_id, ai_msg_id, visible_text, stream_result, _q)
                 return
             full_text = stream_result.committed_text
             safety_notice = stream_result.notice
@@ -2911,7 +2933,7 @@ async def perform_private_memory_search(
             {"role": "assistant", "content": "收到，我会遵循这些规则。"},
         ])
     ability_block = await build_ability_block(
-        user_name, model_key=model_key, excluded_capabilities={"memory_search"}
+        user_name, model_key=model_key, excluded_capabilities={"memory_search"}, profile_query=original_question
     )
     if ability_block:
         messages.extend([
@@ -3662,7 +3684,7 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
                 tts_streamer=regen_tts,
             )
             if manual_retry:
-                await _q.put({"type": "stream_error", "content": "回复连接异常，可重试"})
+                await _save_stopped_chat_reply(conv_id, ai_msg_id, visible_text, stream_result, _q)
                 return
             full_text = stream_result.committed_text
             safety_notice = stream_result.notice

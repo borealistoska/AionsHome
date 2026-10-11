@@ -138,9 +138,18 @@ def _attachments(raw):
 
 
 def transcript_for_context(attachments):
-    return '\n'.join('（语音内容）' + str(a.get('text') or '')
-        for a in _attachments(attachments)
-        if isinstance(a, dict) and a.get('type') == 'expressive_voice')
+    """Restore speech directives so history shows the same format the AI emits."""
+    commands = []
+    for attachment in _attachments(attachments):
+        if not isinstance(attachment, dict) or attachment.get('type') != 'expressive_voice':
+            continue
+        command = attachment.get('source_command')
+        if not command:
+            direction = attachment.get('direction') or '自然'
+            text = attachment.get('text') or ''
+            command = f'[语音|方向={direction}|内容={text}]'
+        commands.append(command)
+    return '\n'.join(commands)
 
 
 async def prepare_message(event):

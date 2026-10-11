@@ -91,6 +91,8 @@ AionApp/local.properties
 *.mp3
 !public/*.mp3
 !public/**/*.mp3
+# Android App 打包的内置音效也需要随源码提交
+!AionApp/app/src/main/assets/public/**/*.mp3
 # 台球内置音效是程序资源，需要随源码提交
 !aion-chat/billiards/static/assets/audio/*.mp3
 !public/card/

@@ -85,7 +85,7 @@ async def _broadcast(store, event_type, item):
 
 class MemoryWrite(BaseModel):
     content: str = Field(min_length=1, max_length=30000)
-    memory_kind: Literal['daily', 'long_term'] = 'long_term'
+    memory_kind: Literal['daily', 'long_term', 'friend'] = 'long_term'
     keywords: str = Field(default='', max_length=2000)
     importance: float = Field(default=.5, ge=0, le=1)
     unresolved: bool = False
@@ -104,7 +104,7 @@ class MemoryWrite(BaseModel):
 @router.get('/{store}')
 async def list_library(store: Store, view: Literal['memories', 'atoms'] = 'memories',
                        state: Literal['all', 'active', 'cold'] = 'all',
-                       kind: Literal['all', 'daily', 'long_term'] = 'all',
+                       kind: Literal['all', 'daily', 'long_term', 'friend'] = 'all',
                        q: str = Query('', max_length=200), start: Date | None = None,
                        end: Date | None = None, page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100)):
     if start and end and start > end:
@@ -121,7 +121,12 @@ async def list_library(store: Store, view: Literal['memories', 'atoms'] = 'memor
             args.append(state)
     if kind != 'all':
         if store == 'main':
-            where.append("LOWER(type) " + ('IN' if kind == 'daily' else 'NOT IN') + " ('daily','digest','seeky_digest','seeky_compressed')")
+            if kind == 'friend':
+                where.append("LOWER(type)='friend'")
+            else:
+                where.append("LOWER(type) " + ('IN' if kind == 'daily' else 'NOT IN') + " ('daily','digest','seeky_digest','seeky_compressed')")
+                if kind == 'long_term':
+                    where.append("LOWER(type)!='friend'")
         else:
             where.append("COALESCE(memory_kind,'long_term')=?")
             args.append(kind)
@@ -166,7 +171,7 @@ async def create_memory(store: Store, body: MemoryWrite):
                   unresolved=int(body.unresolved), evidence_summary=body.evidence_summary, created_at=time.time(),
                   source_start_ts=occurred, source_end_ts=occurred, source_msg_id='[]', embedding=_pack_embedding(vec) if vec else None)
     if store == 'main':
-        values['type'] = 'daily' if body.memory_kind == 'daily' else 'important'
+        values['type'] = {'daily':'daily','friend':'friend','long_term':'important'}[body.memory_kind]
     else:
         values.update(memory_kind=body.memory_kind, scope='connor', room_id='connor_unified')
     async with get_db() as db:
@@ -192,7 +197,7 @@ async def update_memory(store: Store, mem_id: str, body: MemoryWrite):
         embedding_ready = bool(vec)  # Never leave a vector for the old content attached.
     if store == 'main':
         if body.memory_kind != old['memory_kind']:
-            values['type'] = 'daily' if body.memory_kind == 'daily' else 'important'
+            values['type'] = {'daily':'daily','friend':'friend','long_term':'important'}[body.memory_kind]
     else:
         values['memory_kind'] = body.memory_kind
     if body.date:

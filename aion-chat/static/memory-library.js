@@ -5,7 +5,7 @@
   const params = new URLSearchParams(location.search);
   const names = {main:'主AI', chatroom:'第二AI'};
   const state = {store:params.get('store') === 'chatroom' || params.get('store') === 'second' ? 'chatroom' : 'main',
-    view:'memories', filter:'all', page:1, limit:20, total:0, items:[], selected:null, detail:null,
+    view:'memories', filter:params.get('kind') === 'friend' ? 'friend' : 'all', page:1, limit:20, total:0, items:[], selected:null, detail:null,
     pane:'source', sources:[], sourcePage:0, sourceTotal:0, sourceExact:true, sourceMore:false};
   let listRequest = 0, detailRequest = 0, sourceRequest = 0, dialogRequest = 0, searchTimer, dialogBusy = false, refreshPending = false;
   let initialDraft = null;
@@ -15,7 +15,7 @@
   const keywords = raw => { try { const a = JSON.parse(raw); if (Array.isArray(a)) return a.join(' · '); } catch {} return raw || ''; };
   const stamp = ts => ts ? new Date(ts * 1000).toLocaleString('zh-CN', {year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}) : '未记录';
   const day = ts => { const d = new Date((ts || Date.now()/1000)*1000); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; };
-  const kindLabel = m => m.memory_kind === 'daily' ? '日常' : '长期重要';
+  const kindLabel = m => ({daily:'日常', long_term:'长期重要', friend:'朋友记忆'}[m.memory_kind] || '长期重要');
   const periodLabel = m => ({day:'日摘要',week:'周摘要',month:'月摘要',year:'年摘要',fact:'提炼事实'}[m.period_kind] || (m.is_atom ? '' : '压缩摘要'));
   const sourceHref = m => `${m.id.startsWith('private:') ? '/chat?conv=' : '/chatroom?room='}${encodeURIComponent(m.window_id)}&msg=${encodeURIComponent(m.id.slice(m.id.indexOf(':')+1))}`;
   function status(text) { el('status').textContent = text; }
@@ -25,7 +25,7 @@
     document.querySelectorAll('[data-store]').forEach(b => b.setAttribute('aria-pressed', b.dataset.store === state.store));
     document.querySelectorAll('[data-view]').forEach(b => b.setAttribute('aria-selected', b.dataset.view === state.view));
     el('viewHelp').textContent = state.view === 'atoms' ? '活跃与归档原文' : '当前参与召回';
-    const filters = state.view === 'atoms' ? [['all','全部'],['active','活跃'],['cold','已归档']] : [['all','全部'],['daily','日常'],['long_term','长期重要']];
+    const filters = state.view === 'atoms' ? [['all','全部'],['active','活跃'],['cold','已归档']] : [['all','全部'],['daily','日常'],['long_term','长期重要'],['friend','朋友记忆']];
     el('chips').innerHTML = filters.map(([id,label]) => `<button class="chip" data-filter="${id}" aria-pressed="${state.filter === id}">${label}</button>`).join('');
   }
   function renderList() {
@@ -168,10 +168,12 @@
     } catch (e) { if (serial === sourceRequest) pane.innerHTML = `<p class="dialog-error">${esc(e.message)}</p><button class="secondary" data-source-retry>重新加载原文</button>`; }
   }
   function renderSources() {
-    const editable = state.detail?.item.is_atom;
-    el('detailPane').innerHTML = `<p class="note">${state.sourceExact ? '已关联的聊天原文' : '按时间范围／旧批次找到的候选原文，尚未确认逐条对应'} · ${state.sourceTotal} 条</p>` +
+    const external = state.detail?.item.id.startsWith('extmem_');
+    const editable = state.detail?.item.is_atom && !external;
+    const outside = external ? `<details class="quote"><summary>外部平台来源记录</summary><p>${esc(state.detail.item.evidence_summary || '未保留原文')}</p></details>` : '';
+    el('detailPane').innerHTML = outside + `<p class="note">${state.sourceExact ? '已关联的聊天原文' : '按时间范围／旧批次找到的候选原文，尚未确认逐条对应'} · ${state.sourceTotal} 条</p>` +
       state.sources.map((m,i) => `<div class="quote ${m.selected ? '' : 'unselected'}"><label class="source-check">${editable ? `<input type="checkbox" data-source-index="${i}" aria-label="保留这条原文" ${m.selected ? 'checked' : ''}>` : ''}<div><div class="quote-head"><span>${esc(m.name)}</span><time>${esc(stamp(m.created_at))}</time></div><p>${esc(m.content || '（附件消息）')}</p></div></label>${m.window_id ? `<a class="source-jump" href="${esc(sourceHref(m))}" target="_top">打开对话 ↗</a>` : ''}</div>`).join('') +
-      (!state.sources.length ? '<p class="note">没有关联的聊天原文；手动新增的记忆也可以独立保存。</p>' : '') +
+      (!state.sources.length && !external ? '<p class="note">没有关联的聊天原文；手动新增的记忆也可以独立保存。</p>' : '') +
       `<div class="source-toolbar">${state.sourceMore ? '<button id="moreSources">加载更多原文</button>' : ''}${editable && state.sources.length ? `<button id="saveSources" ${state.sourceMore ? 'disabled' : ''}>保存原文筛选</button>` : ''}</div>${editable && state.sourceMore ? '<p class="note">加载全部原文后可保存筛选，避免遗漏尚未显示的记录。</p>' : ''}`;
     if (el('moreSources')) el('moreSources').onclick = () => loadSources(true);
     if (el('saveSources')) el('saveSources').onclick = async () => {
@@ -233,7 +235,7 @@
       const m = result.item;
       const originalDay = m ? day(m.source_start_ts || m.created_at) : day();
       modal(id ? '编辑记忆' : '新增记忆', `<label class="field">内容<textarea id="editText" maxlength="30000" placeholder="记录一件值得记住的事…">${esc(m?.content || '')}</textarea></label>
-        <div class="form-grid"><label class="field">发生日期<input id="editDate" type="date" value="${originalDay}"></label><label class="field">分类<select id="editKind"><option value="daily">日常</option><option value="long_term" ${!m || m.memory_kind === 'long_term' ? 'selected' : ''}>长期重要</option></select></label></div>
+        <div class="form-grid"><label class="field">发生日期<input id="editDate" type="date" value="${originalDay}"></label><label class="field">分类<select id="editKind"><option value="daily">日常</option><option value="long_term" ${!m || m.memory_kind === 'long_term' ? 'selected' : ''}>长期重要</option><option value="friend" ${m?.memory_kind === 'friend' ? 'selected' : ''}>朋友记忆</option></select></label></div>
         <label class="field">关键词<input id="editTags" maxlength="2000" value="${esc(keywords(m?.keywords).replaceAll(' · ', '，'))}" placeholder="用逗号分开"></label><details><summary class="note">更多设置</summary><div class="form-grid"><label class="field">重要程度<input id="editImportance" type="number" min="0" max="1" step="0.05" value="${m?.importance ?? .5}"></label><label class="field inline"><input id="editUnresolved" type="checkbox" ${m?.unresolved ? 'checked' : ''}>待跟进</label></div><label class="field">补充线索<input id="editEvidence" value="${esc(m?.evidence_summary || '')}"></label></details>${relationNote(result.related)}`, cancelSave);
       el('cancelEdit').onclick = dismissDialog;
       initialDraft = draftValues();

@@ -7,6 +7,183 @@ from unittest.mock import AsyncMock, patch
 
 
 class SessionsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_watch_creates_one_ai_table_and_resumes_without_reset(self):
+        first, second = await asyncio.gather(self.service.watch(difficulty='low'), self.service.watch())
+        self.assertEqual(first['id'], second['id'])
+        self.assertEqual(first['players'], ['aion', 'connor'])
+        self.assertEqual(first['difficulty'], 'low')
+        self.assertEqual(len(self.service.store.all()), 1)
+        paused = await self.service.pause(first['id'])
+        resumed = await self.service.watch(difficulty='high')
+        self.assertEqual(resumed['state'], paused['state'])
+        self.assertEqual(resumed['difficulty'], 'low')
+        self.assertEqual(resumed['status'], 'running')
+
+    async def test_watch_continues_saved_score_and_chat_then_starts_new_after_champion(self):
+        game = await self.service.create(['connor', 'aion'], seed=17)
+        game['messages'] = [{'sender': 'connor', 'text': '下一局继续', 'rack': 1}]
+        self.service.store.save(game)
+        await self.settle_rack(game['id'], 0)
+        continued = await self.service.watch()
+        self.assertEqual((continued['id'], continued['rack'], continued['score']), (game['id'], 2, [1, 0]))
+        self.assertEqual(continued['messages'], game['messages'])
+        self.assertEqual(continued['state']['turn'], 1)
+        await self.settle_rack(game['id'], 0)
+        new = await self.service.watch()
+        self.assertNotEqual(new['id'], game['id'])
+        self.assertEqual((new['rack'], new['score']), (1, [0, 0]))
+
+    async def test_watch_waits_for_running_user_table(self):
+        game = await self.service.create(['user', 'aion'], seed=17)
+        await self.service.resume(game['id'], 'w')
+        with self.assertRaises(ValueError):
+            await self.service.watch()
+        self.assertEqual(len(self.service.store.all()), 1)
+        await self.service.pause(game['id'], 'w')
+        watching = await self.service.watch()
+        self.assertNotIn('user', watching['players'])
+        self.assertEqual(self.service.get(game['id'])['status'], 'paused')
+
+    async def test_potted_balls_keep_shooter_and_order_across_reload_then_reset(self):
+        from copy import deepcopy
+        game = await self.service.create(['user', 'aion'], seed=17)
+        sid = game['id']
+        for shooter, ids in [(0, [3, 10, 0]), (1, [12, 2]), (0, [7])]:
+            game = self.service.get(sid)
+            state = deepcopy(game['state'])
+            state['shotCount'] += 1
+            state['lastShot'] = {'shooter': shooter, 'pots': ids, 'pocketEvents': [{'ballId': ball, 'pocketId': 1} for ball in ids]}
+            game['pending'] = {'id': f"pots-{state['shotCount']}", 'action': {'type': 'shot'}, 'actor': shooter}
+            with patch('billiards.service.execute', new=AsyncMock(return_value={'state': state, 'motion_ms': 0})):
+                await self.service.commit_pending(game)
+        self.assertEqual(self.service.get(sid)['potted_balls'], [[3, 10, 7], [12, 2]])
+        await self.service.restart_rack(sid, 'w')
+        self.assertEqual(self.service.get(sid)['potted_balls'], [[], []])
+
+    async def test_ai_stops_after_one_rack_and_waits_across_restart(self):
+        game = await self.service.create(['aion', 'connor'], seed=17)
+        await self.settle_rack(game['id'], 0)
+        with patch.object(self.service, 'next_rack', new=AsyncMock(side_effect=ValueError('unexpected next rack'))) as next_rack:
+            await self.service.loop(game['id'])
+            next_rack.assert_not_awaited()
+        saved = self.service.get(game['id'])
+        self.assertEqual((saved['status'], saved['rack'], saved['score']), ('finished', 1, [1, 0]))
+        self.service.initialized = False
+        with patch.object(self.service, 'ensure_loop') as loop:
+            await self.service.start()
+            loop.assert_not_called()
+
+    async def test_user_can_take_table_and_ai_preserves_progress_until_user_pauses(self):
+        game = await self.service.create(['aion', 'connor'], seed=17)
+        game['status'] = 'running'
+        game['messages'] = [{'sender': 'aion', 'text': '等会儿接着打'}]
+        game['ai_preview'] = {'id': 'not-struck-yet'}
+        self.service.store.save(game)
+        user_game = await self.service.create(['user', 'connor'], seed=18)
+        paused = self.service.get(game['id'])
+        self.assertEqual(paused['status'], 'paused')
+        self.assertEqual(paused['state'], game['state'])
+        self.assertEqual(paused['messages'], game['messages'])
+        self.assertIsNone(paused['ai_preview'])
+        await self.service.resume(user_game['id'], 'w')
+        with self.assertRaises(ValueError):
+            await self.service.resume(game['id'], '')
+        await self.service.pause(user_game['id'], 'w')
+        resumed = await self.service.resume(game['id'], '')
+        self.assertEqual(resumed['state'], game['state'])
+        self.assertEqual(resumed['rack'], 1)
+        await self.service.resume(user_game['id'], 'w')
+        self.assertEqual(self.service.get(game['id'])['status'], 'paused')
+        self.assertEqual(self.service.get(user_game['id'])['state'], user_game['state'])
+        await self.service.finish(user_game['id'], 'w')
+        await self.service.pause(game['id'])
+        await self.settle_rack(game['id'], 0)
+        user_game = await self.service.create(['user', 'aion'], seed=19)
+        await self.service.resume(user_game['id'], 'w')
+        with self.assertRaises(ValueError):
+            await self.service.next_rack(game['id'], '')
+        await self.service.pause(user_game['id'], 'w')
+        second = await self.service.next_rack(game['id'], '')
+        self.assertEqual((second['rack'], second['score']), (2, [1, 0]))
+        await self.settle_rack(user_game['id'], 0)
+        continued = await self.service.next_rack(user_game['id'], 'w')
+        self.assertEqual((continued['rack'], continued['score'], continued['status']), (2, [1, 0], 'running'))
+        self.assertEqual(self.service.get(game['id'])['status'], 'paused')
+
+    async def settle_rack(self, sid, winner):
+        game = self.service.get(sid)
+        state = dict(game['state'], phase='over', result={'winner': winner, 'reason': '合法黑八'})
+        game['pending'] = {'id': f"rack-{game['rack']}", 'action': {'type': 'shot'}, 'actor': winner}
+        with patch('billiards.service.execute', new=AsyncMock(return_value={'state': state, 'motion_ms': 0})):
+            await self.service.commit_pending(game)
+        return self.service.get(sid)
+
+    async def test_two_zero_finishes_series_and_blocks_third_rack(self):
+        game = await self.service.create(['user', 'aion'], seed=17)
+        sid = game['id']
+        first = await self.settle_rack(sid, 0)
+        self.assertEqual(first.get('match_status'), 'active')
+        # The user still has one saved series, even though its partner is free.
+        with self.assertRaises(ValueError):
+            await self.service.create(['user', 'connor'], seed=17)
+        await self.service.next_rack(sid, 'w')
+        final = await self.settle_rack(sid, 0)
+        self.assertEqual(final['score'], [2, 0])
+        self.assertEqual(final['match_status'], 'completed')
+        with self.assertRaises(ValueError):
+            await self.service.next_rack(sid, 'w')
+        self.assertEqual(self.service.get(sid)['rack'], 2)
+
+    async def test_tied_series_reaches_third_rack_and_persists_winner(self):
+        game = await self.service.create(['user', 'connor'], seed=17)
+        sid = game['id']
+        await self.settle_rack(sid, 0)
+        await self.service.next_rack(sid, 'w')
+        await self.settle_rack(sid, 1)
+        deciding = await self.service.next_rack(sid, 'w')
+        self.assertEqual(deciding['rack'], 3)
+        self.assertEqual(deciding.get('match_status'), 'active')
+        final = await self.settle_rack(sid, 1)
+        self.assertEqual(final['score'], [1, 2])
+        self.assertEqual(self.service.get(sid)['match_status'], 'completed')
+        with self.assertRaises(ValueError):
+            await self.service.next_rack(sid, 'w')
+
+    async def test_restart_keeps_rack_score_and_chat_and_abandon_has_no_winner(self):
+        game = await self.service.create(['user', 'aion'], seed=17)
+        sid = game['id']
+        await self.settle_rack(sid, 1)
+        await self.service.next_rack(sid, 'w')
+        game = self.service.get(sid)
+        game['messages'] = [{'sender': 'user', 'text': '继续', 'rack': 1}]
+        self.service.store.save(game)
+        self.assertTrue(hasattr(self.service, 'restart_rack'), '缺少本局重摆，旧版会多算局号')
+        restarted = await self.service.restart_rack(sid, 'w')
+        self.assertEqual((restarted['rack'], restarted['score']), (2, [0, 1]))
+        self.assertEqual(len(restarted['messages']), 1)
+        ended = await self.service.finish(sid, 'w')
+        self.assertEqual(ended.get('match_status'), 'abandoned')
+        with self.assertRaises(ValueError):
+            await self.service.next_rack(sid, 'w')
+
+    def test_legacy_and_abandoned_scores_count_racks_but_not_series_champions(self):
+        from billiards.matches import standings, is_active
+        games = [
+            {'players': ['user', 'connor'], 'score': [2, 2], 'status': 'finished'},
+            {'players': ['user', 'aion'], 'score': [2, 0], 'status': 'finished',
+             'match_format': 'best_of_3', 'match_status': 'completed'},
+            {'players': ['aion', 'connor'], 'score': [1, 0], 'status': 'finished',
+             'match_format': 'best_of_3', 'match_status': 'abandoned'},
+            {'players': ['aion', 'connor'], 'score': [0, 1], 'status': 'finished',
+             'match_format': 'best_of_3', 'match_status': 'active'},
+        ]
+        stats = {s['actor']: s for s in standings(games)}
+        self.assertEqual((stats['user']['wins'], stats['user']['losses'], stats['user']['match_wins']), (4, 2, 1))
+        self.assertEqual((stats['connor']['wins'], stats['connor']['losses'], stats['connor']['match_wins']), (3, 3, 0))
+        self.assertEqual((stats['aion']['wins'], stats['aion']['losses'], stats['aion']['match_losses']), (1, 3, 1))
+        self.assertFalse(is_active(games[0]))
+        self.assertTrue(is_active(games[3]))
+
     async def asyncSetUp(self):
         from billiards.service import BilliardsService
         self.tmp = tempfile.TemporaryDirectory()

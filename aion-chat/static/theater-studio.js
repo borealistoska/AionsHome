@@ -335,7 +335,7 @@ const Studio = (() => {
         renderConvList(); closeSidebar();
         const conv=conversations.find(c=>c.id===id);
         $('chatTitle').textContent=conv?.title||'小剧场';
-        if (conv?.model) $('modelSelect').value=conv.model;
+        if (conv?.model) populateModelSelects(conv.model);
         currentPersonaId=conv?.persona_id||''; renderPersonaList(); renderNovel();
         $('messages').scrollTop=Number(localStorage.getItem('studio_read_'+selected)||0);
       } else await oldSelect(id);
@@ -367,7 +367,7 @@ const Studio = (() => {
   newConversation = function() {
     modal('新的一页', '<label>故事名字</label><input id="newStoryTitle" placeholder="为这个宇宙起个名字"><label>故事模式</label><select id="newStoryMode"><option value="novel">小说 · 先定大纲，逐章写作</option><option value="dialogue">对话 · 自由的一问一答</option></select>', '创建故事', async()=>{
       const mode=$('newStoryMode').value;
-      const conv=await api('POST','/api/theater/conversations',{title:$('newStoryTitle').value.trim()||'未命名故事',persona_id:currentPersonaId,model:$('modelSelect').value});
+      const conv=await api('POST','/api/theater/conversations',{title:$('newStoryTitle').value.trim()||'未命名故事',persona_id:currentPersonaId,model:$('modelSelect').value||undefined});
       if (!conv.id) throw Error('创建失败');
       if (!conversations.some(c=>c.id===conv.id)) conversations.unshift(conv);
       await request('/books/'+conv.id,'PUT',{mode});
@@ -740,10 +740,12 @@ const Studio = (() => {
 
   async function boot() {
     mount();
-    await Promise.all([
-      action(async()=>{for(const b of await request('/books')) modes.set(b.id,b.mode);}),
-      action(async()=>{const names=await api('GET','/api/worldbook');discussionNames={user_name:names.user_name||'用户',ai_name:names.ai_name||'AI'};})
-    ]);
+    action(async()=>{for(const b of await request('/books')) modes.set(b.id,b.mode);renderConvList();});
+    action(async()=>{
+      const names=await api('GET','/api/worldbook');
+      discussionNames={user_name:names.user_name||'用户',ai_name:names.ai_name||'AI'};
+      if(currentConvId && novel())renderNovel();
+    });
     await init();
     if(!currentConvId)$('messages').innerHTML='<div class="studio-empty"><div class="ornament">❧</div><h2>今晚，去哪个宇宙？</h2><p>自由对话，或把一个念头写成一本小说。<br>故事留在这里，随时回来接着听。</p>'+button('创建第一个故事','newConversation()','primary')+'</div>';
   }

@@ -8,6 +8,26 @@ import tts
 
 
 class TTSBackpressureTests(unittest.IsolatedAsyncioTestCase):
+    async def test_abort_notifies_client_and_never_emits_late_audio(self):
+        queue = asyncio.Queue()
+        started = asyncio.Event()
+
+        async def slow_audio(*args, **kwargs):
+            started.set()
+            await asyncio.Event().wait()
+
+        with tempfile.TemporaryDirectory() as tmp, patch("tts._request_tts_audio", new=slow_audio):
+            streamer = tts.TTSStreamer("abort", "voice", sse_queue=queue,
+                                       min_chars=1, max_chars=8, cache_dir=Path(tmp))
+            await streamer.feed_async("这是一句正文。")
+            await asyncio.wait_for(started.wait(), 1)
+            await streamer.abort()
+            await streamer.flush()
+            self.assertEqual(queue.get_nowait(), {"type": "tts_cancel", "data": {"msg_id": "abort"}})
+            self.assertTrue(queue.empty())
+            self.assertTrue(streamer.completed.is_set())
+            self.assertEqual(list(Path(tmp).glob("*.mp3")), [])
+
     async def test_monitor_stream_never_speaks_widget_or_banner_commands(self):
         spoken = []
 

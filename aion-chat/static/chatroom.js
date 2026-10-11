@@ -472,6 +472,17 @@ function crBumpTTSPlaybackState() {
   crSendTTSState();
 }
 
+function crCancelTTSMessage(msgId) {
+  if (!msgId) return;
+  crSuppressTTSMsg(msgId);
+  const index = _ttsEngine.playOrder.indexOf(msgId);
+  if (index === 0) crStopTTS();
+  else if (index > 0) {
+    delete _ttsEngine.chunkQueues[msgId];
+    _ttsEngine.playOrder.splice(index, 1);
+  }
+}
+
 function crSuppressTTSMsg(msgId) {
   if (msgId) crSuppressedTTSMsgIds.add(msgId);
 }
@@ -687,7 +698,6 @@ function crFinishTTSForMsg(msgId, createdAt, targetClientId) {
   if (targetClientId && targetClientId !== crAmbientClientId) return;
   const ts = Number(createdAt || 0);
   if (crSuppressedTTSMsgIds.has(msgId) || (ts && ts < crTtsAcceptAfter)) {
-    crSuppressedTTSMsgIds.delete(msgId);
     return;
   }
   if (crSeenTTSDone.has(msgId)) return;
@@ -3802,7 +3812,8 @@ function crHandleReplyFailure(data) {
   const failedId = data.message?.id || streamId;
   crSuppressTTSMsg(failedId);
   crSuppressTTSMsg(streamId);
-  if (_ttsEngine.playOrder.some(id => id === failedId || id === streamId)) crStopTTS();
+  crCancelTTSMessage(failedId);
+  crCancelTTSMessage(streamId);
   pendingStreamSender = null;
   pendingStreamId = null;
   // A persisted failure contains the received prefix and reason, using the
@@ -3901,6 +3912,9 @@ function handleSSE(data) {
       break;
     case 'tts_chunk':
       crEnqueueTTSChunk(data.data.msg_id, data.data.seq, data.data.url, data.data.created_at, data.data.target_client_id, data.data.text, data.data.expressive, data.data.parent_msg_id);
+      break;
+    case 'tts_cancel':
+      crCancelTTSMessage(data.data?.msg_id);
       break;
     case 'tts_done':
       crFinishTTSForMsg(data.data.msg_id, data.data.created_at, data.data.target_client_id);
@@ -4846,7 +4860,7 @@ function restoreChatroomMemoryPosition(memId) {
 }
 
 function chatroomMemoryKind(m) {
-  return m?.memory_kind === 'daily' ? 'daily' : 'long_term';
+  return ['daily','friend'].includes(m?.memory_kind) ? m.memory_kind : 'long_term';
 }
 
 function setChatroomMemoryKindFilter(kind) {
@@ -4879,7 +4893,7 @@ function renderChatroomMemories(focusMemId = '') {
         || kindLabel.includes(query);
     })
     : kindFiltered;
-  const filterText = chatroomMemoryKindFilter === 'daily' ? '日常' : (chatroomMemoryKindFilter === 'long_term' ? '长期重要' : '');
+  const filterText = {daily:'日常',long_term:'长期重要',friend:'朋友记忆'}[chatroomMemoryKindFilter] || '';
   if (countBadge) {
     countBadge.textContent = `共 ${all.length} 条`
       + (filterText ? `，${filterText} ${kindFiltered.length} 条` : '')
@@ -4904,6 +4918,7 @@ function renderChatroomMemories(focusMemId = '') {
     const kindMenu = menuOpen ? `<div class="mem-kind-menu" onclick="event.stopPropagation()">
       <button class="${curKind === 'long_term' ? 'active' : ''}" onclick="selectChatroomMemoryKind('${m.id}','long_term',event)">长期重要</button>
       <button class="${curKind === 'daily' ? 'active' : ''}" onclick="selectChatroomMemoryKind('${m.id}','daily',event)">日常</button>
+      <button class="${curKind === 'friend' ? 'active' : ''}" onclick="selectChatroomMemoryKind('${m.id}','friend',event)">朋友记忆</button>
     </div>` : '';
     const unresolved = Boolean(m.unresolved);
     const importance = m.importance == null
@@ -5033,7 +5048,7 @@ async function selectChatroomMemoryKind(memId, nextKind, event) {
   const prevKind = mem.memory_kind;
   const prevLabel = mem.memory_kind_label;
   mem.memory_kind = nextKind;
-  mem.memory_kind_label = nextKind === 'daily' ? '日常' : '长期重要';
+  mem.memory_kind_label = {daily:'日常',long_term:'长期重要',friend:'朋友记忆'}[nextKind];
   chatroomMemoryKindMenuId = null;
   renderChatroomMemories(memId);
   try {
@@ -5374,6 +5389,8 @@ function connectWS() {
       if (data.type === 'tts_chunk' && data.data) {
         crEnqueueTTSChunk(data.data.msg_id, data.data.seq, data.data.url, data.data.created_at, data.data.target_client_id, data.data.text, data.data.expressive, data.data.parent_msg_id);
       }
+
+      if (data.type === 'tts_cancel' && data.data) crCancelTTSMessage(data.data.msg_id);
 
       if (data.type === 'tts_done' && data.data) {
         crFinishTTSForMsg(data.data.msg_id, data.data.created_at, data.data.target_client_id);

@@ -339,6 +339,12 @@ def _resolve_attachment_path(att) -> Path | None:
     att = _attachment_file_ref(att)
     if not att:
         return None
+    if att.startswith('/qq-media/'):
+        # Private QQ worker files: this reference is not an HTTP static route.
+        name = att[len('/qq-media/'):]
+        if not re.fullmatch(r'[a-zA-Z0-9_-]+\.jpg', name):
+            return None
+        return Path(__file__).resolve().parent / 'data/qq_social/media' / name
     if att.startswith("/cr-uploads/"):
         # /cr-uploads/2026-05-07/xxx.jpg → CODEX_UPLOADS_DIR/2026-05-07/xxx.jpg
         rel = att[len("/cr-uploads/"):]
@@ -1569,6 +1575,7 @@ def _save_model_raw_response(
     error: str = "",
     started_at: float,
     finished_at: float,
+    usage: dict | None = None,
     log_dir: Path = MODEL_RAW_RESPONSE_DIR,
 ) -> Path | None:
     """保存模型调用的原始返回和请求上下文，供近三天故障追踪。"""
@@ -1589,6 +1596,7 @@ def _save_model_raw_response(
             "raw_response": raw_response,
             "filtered_response": filtered_response,
             "error": error,
+            "usage": usage or {},
         }
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
         return path
@@ -1608,6 +1616,7 @@ async def simple_ai_call(
     *,
     trace_label: str = "simple_ai_call",
     include_device_context: bool = False,
+    usage: dict | None = None,
 ) -> str:
     """收集 stream_ai 的全部 chunk并留存三天原始响应，返回过滤状态行后的正文。"""
     model_key = resolve_model_key(model_key)
@@ -1619,6 +1628,7 @@ async def simple_ai_call(
         async for chunk in stream_ai(
             messages,
             model_key,
+            meta=usage,
             temperature=temperature,
             include_device_context=include_device_context,
         ):
@@ -1640,6 +1650,7 @@ async def simple_ai_call(
             error=error,
             started_at=started_at,
             finished_at=time.time(),
+            usage=usage,
         )
 
 

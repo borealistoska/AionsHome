@@ -1,5 +1,11 @@
 import asyncio
 import unittest
+from contextlib import asynccontextmanager
+from unittest.mock import AsyncMock, patch
+
+import aiosqlite
+import routes.chat as chat_routes
+from stream_safety import StreamSafetyResult
 
 from routes.chat import _consume_chat_realtime_stream, _consume_chat_stream
 from stream_safety import StreamActivity
@@ -32,7 +38,31 @@ class _TTSProbe:
 
 
 class ChatStreamSafetyTest(unittest.IsolatedAsyncioTestCase):
-    async def test_safe_live_failure_clears_provisional_text_then_uses_legacy_once(self):
+    async def test_stopped_reply_is_saved_with_checked_prefix_and_reason(self):
+        async with aiosqlite.connect(":memory:") as db:
+            await db.executescript("""
+                CREATE TABLE conversations (id TEXT PRIMARY KEY, updated_at REAL);
+                CREATE TABLE messages (id TEXT PRIMARY KEY, conv_id TEXT, role TEXT,
+                                       content TEXT, created_at REAL);
+                INSERT INTO conversations VALUES ('conv', 0);
+            """)
+            @asynccontextmanager
+            async def get_db():
+                yield db
+
+            queue = asyncio.Queue()
+            with patch.object(chat_routes, "get_db", get_db), \
+                    patch.object(chat_routes.manager, "broadcast", new=AsyncMock()):
+                await chat_routes._save_stopped_chat_reply(
+                    "conv", "reply", "正常的前半段。", StreamSafetyResult(
+                        "", stop_reason="repetition", notice="检测到持续重复，已停止生成。"), queue)
+            saved = await (await db.execute("SELECT content FROM messages WHERE id='reply'")).fetchone()
+            self.assertEqual(saved[0], "正常的前半段。\n\n[检测到持续重复，已停止生成。]")
+            event = queue.get_nowait()
+            self.assertEqual(event["type"], "stream_error")
+            self.assertEqual(event["message"]["content"], saved[0])
+
+    async def test_safe_live_failure_keeps_checked_text_without_retry(self):
         queue = asyncio.Queue()
         attempts = 0
 
@@ -53,12 +83,12 @@ class ChatStreamSafetyTest(unittest.IsolatedAsyncioTestCase):
         events = []
         while not queue.empty():
             events.append(await queue.get())
-        self.assertEqual(attempts, 2)
-        self.assertTrue(used_fallback)
-        self.assertFalse(manual_retry)
-        self.assertEqual(result.committed_text, "旧管线完整回复")
-        self.assertEqual(visible_text, "旧管线完整回复")
-        self.assertIn({"type": "stream_reset"}, events)
+        self.assertEqual(attempts, 1)
+        self.assertFalse(used_fallback)
+        self.assertTrue(manual_retry)
+        self.assertTrue(result.committed_text.startswith("安全正文。"))
+        self.assertEqual(visible_text, result.committed_text)
+        self.assertNotIn({"type": "stream_reset"}, events)
 
     async def test_provider_activity_is_not_visible_or_sent_to_tts(self):
         queue = asyncio.Queue()

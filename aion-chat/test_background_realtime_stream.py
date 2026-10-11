@@ -49,7 +49,7 @@ class BackgroundRealtimeStreamTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(outcome.result.committed_text, "及时回复。" + "呀" * 24)
         self.assertTrue("".join(tts.text).startswith("及时回复。"))
 
-    async def test_failed_safe_and_legacy_wakeup_returns_no_partial_text(self):
+    async def test_failed_wakeup_keeps_checked_prefix_without_retry(self):
         attempts = 0
 
         def source_factory():
@@ -63,9 +63,9 @@ class BackgroundRealtimeStreamTest(unittest.IsolatedAsyncioTestCase):
                 model_key="Codex-Sol",
             )
 
-        self.assertEqual(attempts, 2)
+        self.assertEqual(attempts, 1)
         self.assertTrue(outcome.manual_retry_required)
-        self.assertEqual(outcome.result.committed_text, "")
+        self.assertTrue(outcome.result.committed_text.startswith("部分正文。"))
 
 
 if __name__ == "__main__":

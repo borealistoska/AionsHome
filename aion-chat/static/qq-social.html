@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>QQ 群聊 · 小家</title>
+<link rel="stylesheet" href="/static/qq-social.css"></head>
+<body><main>
+<header><a href="/">← 小家</a></header>
+<section class="intro"><h1>QQ 群聊</h1><button id="power" class="power" disabled>连接中…</button></section>
+<p id="notice" role="status" aria-live="polite"></p>
+<div id="actors" class="actors"></div>
+<section class="card mode-card"><div class="row"><h2>回复方式</h2><span id="modeLabel" class="muted">连接中…</span></div>
+<div id="modeControls" class="modes" role="group" aria-label="回复方式"><button type="button" data-mode="respond" aria-pressed="false" disabled>仅 @ 回复</button><button type="button" data-mode="natural" aria-pressed="false" disabled>主动接话</button></div>
+<p id="modeHint" class="hint">选择后立即生效</p>
+<details class="advanced"><summary>聊天参数 <span id="rateLabel">120 秒 · 35 条</span></summary><form id="settings">
+<div id="presets" class="presets" role="group" aria-label="频率快捷值"><button type="button" data-interval="30" data-hourly="30">随聊 · 30秒</button><button type="button" data-interval="120" data-hourly="6">平常 · 2分</button><button type="button" data-interval="300" data-hourly="3">安静 · 5分</button></div>
+<div class="fields"><label>主动判断间隔（秒）<input name="interval_seconds" type="number" min="10" max="3600" value="120" required></label><label>群上下文（条）<input name="context_messages" type="number" min="5" max="100" value="35" required></label><label>图片最多等待（秒）<input name="image_wait_seconds" type="number" min="0" max="120" value="60" required></label><label>每小时主动发言（次）<input name="hourly_limit" type="number" min="1" max="120" value="6" required></label><label>每小时全部回复（次）<input name="total_hourly_limit" type="number" min="5" max="120" value="60" required></label></div>
+<p class="hint">未 @ 的消息统一冷却，有新消息且间隔已到才判断；没有新消息不调用。图片补文字会提前结束等待，仍遵守主动间隔。上下文只调 QQ 群记录，小家记忆照常带入。</p>
+<details><summary>怎么调</summary><p class="hint">快捷值只调整间隔和主动发言上限，保存后生效。上下文越多，看得越完整、单次用量也越多；全部回复上限含 @，按每位 AI、每个群计算。主动接话需 QQ 开启「接收所有消息」。保存设置会取消尚未完成的旧回复。</p></details>
+<button type="submit" class="save-settings">保存参数</button></form></details></section>
+<section class="card"><h2>已连接的群</h2><div id="groups"></div></section>
+<section class="card"><details id="outsidePanel"><summary>外面的回忆</summary><div class="switches"><label><input id="bringHome" type="checkbox"> 把 QQ 回忆带回小家</label></div><p class="hint">他们自己挑选值得留下的经历，分别存进朋友记忆。小家会参考最近回忆，不自动往聊天窗口发消息。</p><div id="outsideMemories"></div></details></section>
+<section id="detail" class="card" hidden><h2 id="detailTitle">群里的聊天</h2><details><summary>群成员 <span id="memberCount"></span></summary><div id="members"></div></details><details><summary>近期话题</summary><div id="summary" class="hint"></div></details><details><summary>交往记忆 <span id="memoryCount"></span></summary><div id="memories"></div></details><details><summary>最近对话 <span id="messageCount"></span></summary><div id="messages"></div></details></section>
+<footer><details><summary>开关与记忆说明</summary><p>关闭总开关后不接收进 AI、不保存新消息、不回复；重开不补发。已提交给 QQ 的消息无法靠开关撤回。群记录独立保存；开启「带回小家」后，只把他们选中的回忆带入各自的朋友记忆。关闭带回开关不删除已有记忆。识别为 AI 的连续互聊最多 3 轮。</p></details></footer>
+</main><script src="/static/qq-social.js"></script></body></html>

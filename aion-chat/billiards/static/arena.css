@@ -1,0 +1,120 @@
+/* A static club-room backdrop; only controls and result entry animate. */
+.arena-lobby{max-width:1020px;margin:0 auto;padding:26px 32px 0;color:#f4ecd7}
+.arena-nav{display:flex;align-items:center;justify-content:space-between;gap:16px}
+.arena-nav>span{font:11px Georgia,serif;letter-spacing:3px;color:#b6aa88}
+.arena-nav .quiet{border-color:#596046;background:#172a22;min-height:44px}
+#historyCount{display:inline-grid;place-items:center;min-width:22px;height:22px;margin-left:6px;border-radius:50%;background:#d2b9791c;color:#ead18e;font-size:11px}
+.arena-hero{position:relative;text-align:center;padding:30px 12px 28px}
+.arena-hero:before,.arena-hero:after{content:"";position:absolute;top:56%;width:22%;height:1px;background:linear-gradient(90deg,transparent,#bd9e544f)}
+.arena-hero:before{left:0}.arena-hero:after{right:0;transform:rotate(180deg)}
+.arena-emblem{position:relative;display:grid;place-items:center;width:52px;height:52px;margin:0 auto 12px;border:1px solid #bca268;border-radius:50%;background:radial-gradient(circle at 35% 20%,#42513a,#112019);color:#e7d5a9;font:36px Georgia,serif;box-shadow:0 0 0 6px #d4b86b09}
+.arena-kicker{margin:0!important;color:#c4ac76!important;font-size:11px;letter-spacing:3px}
+.arena-hero h1{font-family:"Noto Serif SC","Songti SC","SimSun",serif;font-size:clamp(32px,5vw,49px);font-weight:700;letter-spacing:6px;margin:8px 0!important;color:#f6edda}
+.arena-hero h1 span{font:inherit;letter-spacing:inherit;color:#e5c783;margin-left:8px}
+.arena-hero>p:not(.arena-kicker){font-size:13px;margin:8px 0 17px;color:#acbba9}
+.format-seal{display:inline-flex;align-items:center;gap:14px;border:1px solid #9c85434d;padding:9px 18px;background:#cfb57208;border-radius:3px}
+.format-seal span{font:9px Georgia,serif;letter-spacing:2px;color:#a59161}
+.format-seal strong{font-size:12px;font-weight:500;color:#ddc794}
+.arena-section-title{display:flex;justify-content:space-between;align-items:center;gap:12px;margin:0 0 14px}
+.arena-section-title h2{font-size:17px;font-weight:500;margin:0;letter-spacing:2px;color:#f0e4c9}
+.arena-section-title>span{font-size:11px;color:#95a48f}
+.contender-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
+.contender-card{position:relative;text-align:center;padding:22px 15px 18px;border:1px solid #58634a;border-radius:8px;background:linear-gradient(155deg,#283a2c,#15271f);overflow:hidden}
+.contender-card:before{content:"";position:absolute;inset:6px;border:1px solid #b9b67a0c;border-radius:4px;pointer-events:none}
+.contender-card.leader{border-color:#c5a967;background:linear-gradient(155deg,#3b4430,#192b21);box-shadow:0 6px 22px #070f0930}
+.contender-rank{display:block;font:10px Georgia,serif;letter-spacing:2px;color:#a8b69e;height:16px;margin-bottom:14px}
+.leader .contender-rank{color:#f1d28a;letter-spacing:1px}
+.contender-portrait{display:block;width:70px;height:70px;margin:0 auto 12px;object-fit:cover;border-radius:50%;border:2px solid #727856;box-shadow:0 0 0 5px #a9b8940c}
+.leader .contender-portrait{border-color:#d7b774}
+.contender-name{margin:0 0 14px;font-size:17px;font-weight:600;overflow-wrap:anywhere}
+.contender-record{display:flex;justify-content:center;align-items:baseline;gap:7px}
+.contender-record b{font:38px Georgia,serif;font-variant-numeric:tabular-nums;color:#f2deaa}
+.contender-record span{font-size:11px;color:#a6b39b}
+.contender-record i{font-style:normal;margin:0 3px;color:#56664d}
+.record-side{display:inline-flex;align-items:baseline;gap:4px;white-space:nowrap}
+.contender-meta{display:flex;justify-content:space-between;gap:6px;border-top:1px solid #a4b2851c;padding-top:13px;margin-top:15px;font-size:11px;color:#aab89f}
+.contender-meta b{font-weight:500;color:#e2dbc3}
+.standings-note{font-size:10px;margin:10px 0 24px!important;color:#869782!important}
+.challenge-panel{padding:20px 22px;border:1px solid #69714977;border-radius:8px;background:#1d3026;margin-bottom:24px}
+.challenge-panel .opponent-picks{margin:0;gap:12px}
+.challenge-panel .room-choice{position:relative;padding:15px 18px;background:#14271e;border-color:#4e6144;border-radius:5px;transition:border-color .16s,background .16s}
+.challenge-panel .room-choice[aria-pressed=true]{background:#2c3d2b;border-color:#ceaf6b}
+.challenge-panel .room-choice strong{font-size:16px}
+.challenge-panel .room-choice small{font-size:11px;color:#a6b69a}
+.challenge-panel .room-choice img{width:44px;height:44px}
+.pick-mark{margin-left:auto;font-size:17px;color:#ead193;opacity:0}
+[aria-pressed=true] .pick-mark{opacity:1}
+.challenge-actions{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-top:15px}
+.challenge-actions label{color:#a9b99f;font-size:12px}
+.challenge-actions select{margin:0 0 0 8px;background:#17271e;min-height:44px;font-size:12px}
+#startChallenge{min-width:210px;min-height:48px;padding:12px 22px;background:linear-gradient(110deg,#e2ca8e,#bb9b55);color:#213223;font-weight:700;border-color:#edda9b;border-radius:4px;display:flex;justify-content:space-between;gap:16px}
+.arena-lobby .saved-games{margin-top:0;gap:12px}
+.spectator-panel{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;padding:16px 20px;margin-bottom:24px;border:1px solid #69714977;border-radius:8px;background:#192c23}
+.spectator-panel[hidden]{display:none}
+.spectator-panel h2{margin:0 0 7px;font-size:15px;font-weight:500;color:#f0e4c9}
+.spectator-panel p{margin:0;font-size:12px;color:#a9b99f;line-height:1.6;overflow-wrap:anywhere}
+.spectator-panel>div{flex:1 1 220px;min-width:0}
+.spectator-panel button{min-height:48px;flex:1 0 auto;border-color:#b79c60;color:#ead193}
+.arena-lobby .saved-game{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:10px 12px;border-radius:5px;padding:16px;background:#1b2d23;border-color:#526446}
+.saved-game-copy{min-width:0;overflow-wrap:anywhere}
+.saved-game-actions{grid-column:1/-1}
+.arena-lobby .saved-game .continue-ai-match{grid-column:2;grid-row:1;margin:0;max-width:150px;padding:12px;color:#ead193;border-color:#b79c60;font-size:12px;line-height:1.5}
+.arena-lobby .saved-game p{font-size:12px}
+.arena-lobby .saved-game .quiet{min-height:44px}
+.arena-lobby .saved-game .end-saved-match{color:#e1b49a;border-color:#806554}
+.arena-footer{display:flex;justify-content:space-between;margin:26px 0 0;padding:16px 0;border-top:1px solid #8b956a30;color:#82907d;font-size:10px;letter-spacing:1px}
+.arena-history{width:min(680px,calc(100% - 32px));max-height:85dvh;padding:28px;background:#192b22;border:1px solid #af945f;overscroll-behavior:contain}
+.arena-history h2{font-size:25px;margin:7px 0 8px}.history-intro{font-size:12px!important;margin-bottom:20px!important;color:#98ac92!important}
+.history-list{display:grid;gap:10px}
+.history-entry{padding:15px;border:1px solid #526145;border-radius:5px;background:#11241b}
+.history-entry summary{cursor:pointer;list-style:none;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px;min-height:44px}
+.history-entry summary::-webkit-details-marker{display:none}
+.history-entry summary:after{content:"查看详情 ＋";grid-column:2;font-size:10px;color:#c9b785}
+.history-match-title{font-size:14px;overflow-wrap:anywhere;grid-column:1}
+.history-score{grid-column:2;grid-row:1;font:24px Georgia,serif;color:#e6cd90}
+.history-caption{grid-column:1;font-size:11px;color:#93a88c;line-height:1.6}
+.history-entry[open] summary:after{content:"收起 −"}
+.history-detail{border-top:1px solid #62735144;padding-top:12px;margin-top:10px;color:#c2cdb6;font-size:12px;line-height:1.7}
+.history-rack{padding:6px 0}.history-detail h3{font-size:13px;margin:12px 0 6px;color:#daca9c}
+.history-chat{max-height:230px;overflow:auto;overscroll-behavior:contain;padding-right:5px}
+.history-chat p{font-size:12px!important;white-space:pre-wrap;overflow-wrap:anywhere;margin:8px 0!important}
+.history-chat strong{color:#dec78f}.history-chat small{color:#8fa487;margin-left:8px}
+#historyState{font-size:12px;color:#d9be8e}#historyMore{display:block;margin:18px auto 0;min-height:44px}#historyMore[hidden]{display:none}
+.series-stage{color:#e6cb8e;font-size:11px;white-space:nowrap}
+.win-marks{font-size:12px;color:#d8bd75;letter-spacing:2px;white-space:nowrap}
+.room-bar .player{flex-wrap:wrap;flex:1;min-width:0}
+.room-bar .player.opponent{justify-content:flex-end}
+.seat-pots{display:flex;flex-wrap:wrap;gap:4px;flex-basis:100%;padding:0;margin:3px 0 0;list-style:none;min-height:22px}
+#rightPottedBalls{flex-direction:row-reverse}
+.seat-ball{display:grid;place-items:center;flex:none;width:22px;height:22px;border-radius:50%;background:var(--ball-color);border:1px solid #e9e2c54d;box-shadow:inset -2px -2px 3px #0005}
+.seat-ball.striped{background:linear-gradient(#f2ebd7 0 23%,var(--ball-color) 23% 77%,#f2ebd7 77%)}
+.seat-ball b{display:grid;place-items:center;width:13px;height:13px;border-radius:50%;background:#f4f0e3;color:#17251b;font:700 9px "Segoe UI",sans-serif}
+.room-bar .match-center{display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:4px 10px;min-width:0}
+#endLobbyBtn{display:block;width:100%;margin:10px 0 0;min-height:44px}
+#endDialog[data-series=completed] .end-medal{box-shadow:0 0 0 7px #dec69415,0 0 24px #d3ad4430}
+.arena-lobby button:focus-visible,.arena-history summary:focus-visible{outline:2px solid #f2d791;outline-offset:4px}
+@media(max-width:760px){
+  .arena-lobby{padding:18px 16px 0;margin:0}.arena-hero{padding:25px 0 22px}.arena-nav{gap:8px}.arena-nav>span{display:none}.arena-nav .quiet{font-size:12px;padding:8px 10px}
+  .arena-hero:before,.arena-hero:after{width:12%}.arena-hero h1{letter-spacing:3px}.arena-hero>p:not(.arena-kicker){font-size:12px}
+  .contender-grid{gap:8px}.contender-card{padding:16px 7px 12px}.contender-portrait{width:52px;height:52px;margin-bottom:10px}.contender-rank{font-size:9px;letter-spacing:1px;margin-bottom:9px}.contender-name{font-size:14px;margin-bottom:10px}
+  .contender-record{display:grid;grid-template-columns:1fr 1fr;gap:4px}.contender-record b{font-size:clamp(20px,6vw,24px)}.contender-record span{font-size:9px}.contender-record i{display:none}.record-side{justify-content:center;gap:2px}
+  .contender-meta{flex-direction:column;gap:5px;font-size:10px;padding-top:10px;margin-top:10px}.standings-note{font-size:9px;margin-bottom:20px!important}
+  .arena-section-title h2{font-size:15px}.arena-section-title>span{font-size:10px}.challenge-panel{padding:17px 13px;margin-bottom:20px}
+  .challenge-panel .opponent-picks{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.challenge-panel .room-choice{padding:12px 8px;gap:8px}.challenge-panel .room-choice img{width:30px;height:30px}.challenge-panel .room-choice strong{font-size:13px}.challenge-panel .room-choice small{display:none}.pick-mark{font-size:12px}
+  .challenge-actions{gap:10px;flex-wrap:wrap}.challenge-actions label{font-size:11px}.challenge-actions select{padding:6px;margin-left:4px}.challenge-actions #startChallenge{min-width:130px;flex:1;font-size:13px;padding:11px 13px}
+  .format-seal{padding:8px 12px;gap:9px}.format-seal span{font-size:8px;letter-spacing:1px}.format-seal strong{font-size:11px}
+  .arena-footer{font-size:9px;letter-spacing:0;margin-top:20px}.arena-footer>span:last-child{font-size:8px}
+  .arena-history{width:calc(100% - 16px);max-height:92dvh;padding:24px 16px}.history-entry{padding:12px}.history-match-title{font-size:13px}
+  .room-bar #seriesStage,.room-bar #winMarks{font-size:10px}.room-bar #rackBadge{font-size:10px}
+}
+@media(orientation:landscape) and (max-height:560px){.room-bar .match-center{gap:3px 6px}.room-bar #winMarks{display:none}}
+@media(max-width:760px) and (orientation:portrait){
+  .room-bar .player .seat-pots{grid-column:1/-1;grid-row:3;gap:3px;min-height:18px;margin-top:4px}
+  .seat-ball{width:18px;height:18px}.seat-ball b{width:12px;height:12px;font-size:8px}
+  .room-bar .match-bar{grid-template-columns:minmax(0,1fr) 112px minmax(0,1fr);min-height:72px;gap:5px}
+  .room-bar .match-center{flex-wrap:nowrap;gap:2px}
+  .room-bar #rackBadge{font-size:9px;white-space:normal;line-height:12px;max-width:112px}
+  .room-bar #seriesStage{font-size:9px;line-height:12px}
+  .room-bar #winMarks{font-size:10px;line-height:12px}
+}
+@media(prefers-reduced-motion:reduce){.challenge-panel .room-choice{transition:none}}

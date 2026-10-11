@@ -4,14 +4,19 @@ import math
 import re
 import time
 
-CATEGORIES = {'profile': '长期画像', 'recent': '近期重点与待办'}
-KINDS = {'context': '普通近况', 'project': '项目', 'task': '待办'}
+CATEGORIES = {'recent': '近期生活与待办'}
+SUBCATEGORIES = {'recent': {'plans': '待办与安排', 'projects': '正在进行', 'state': '近期状态',
+                            'preferences': '近期偏好', 'ideas': '想做的事'}}
+KINDS = {'context': '近期情况', 'project': '正在进行', 'task': '明确待办', 'idea': '尚未着手'}
 STATUSES = {'active': '当前关注', 'stale': '久未确认', 'unknown': '结果未确认',
             'done': '已完成', 'cancelled': '已取消', 'retired': '已淡出'}
 PHASES = {'planned': '计划', 'ongoing': '进行中', 'finished': '已结束', 'unknown': '未确认'}
-PROMPT_LIMIT = 1200
+STATE_MAX_CHARS = 160
+PROMPT_LIMIT = 2000
+MAX_ENTRIES = 24
+MAX_SAVED_CHARS = 1600
 DAY = 86400
-LEGACY_CATEGORIES = {'basic', 'habits', 'preferences', 'companionship', 'agreements'}
+LEGACY_CATEGORIES = {}
 SUBJECT_RE = re.compile(r'(?<!其他)(?<!其它)(?<!每个)(?<!每位)(?<!所有)(?<!多)用户'
                         r'(?!画像|体验|界面|账号|账户|权限|认证|登录|注册|管理|数据|设置|配置|消息|名称|姓名)')
 
@@ -65,7 +70,7 @@ def unfinished_task(entry):
 
 def category(value):
     if value in LEGACY_CATEGORIES:
-        return 'profile'
+        return LEGACY_CATEGORIES[value]
     if value not in CATEGORIES:
         raise ValueError('画像分类无效')
     return value
@@ -90,29 +95,58 @@ def normalize(entry):
     result.setdefault('kind', 'context')
     result.setdefault('status', 'active')
     result.setdefault('sustained', False)
+    result['subcategory'] = subcategory(result)
+    result.setdefault('importance', 0.6)
+    result.setdefault('certainty', 'fact')
+    result.setdefault('keywords', [])
     return result
+
+
+def subcategory(entry):
+    value = entry.get('subcategory')
+    if value in SUBCATEGORIES['recent']:
+        return value
+    return {'task': 'plans', 'project': 'projects', 'idea': 'ideas'}.get(entry.get('kind'), 'state')
+
+
+def estimate_tokens(text):
+    """Conservative, dependency-free estimate; deliberately labelled approximate in the UI."""
+    return math.ceil(sum(0.3 if ord(c) < 128 else 1.5 for c in text))
+
+
+def relevant_fact(entry, query):
+    query = query.casefold().strip()
+    if not query:
+        return False
+    terms = entry.get('keywords') or []
+    topic = entry.get('topic', '').strip()
+    if topic:
+        terms = [*terms, topic]
+    if any(len(term.strip()) >= 2 and term.casefold().strip() in query for term in terms):
+        return True
+    # Legacy facts without retrieval keywords remain discoverable by specific shared phrases.
+    phrases = re.findall(r'[\u4e00-\u9fff]{3,}|[a-zA-Z0-9_]{3,}', query)
+    text = entry.get('content', '').casefold()
+    return any(p in text for p in phrases)
 
 
 def lifecycle(entry, now):
     status = entry.get('status', 'active')
-    if entry.get('deleted'):
+    if entry.get('deleted') or entry.get('category') != 'recent':
         return 'retired'
     if status in ('done', 'cancelled', 'retired'):
         return status
-    if entry.get('category') == 'recent' and entry.get('kind') != 'task' and entry.get('expires_at') and now >= entry['expires_at']:
-        return 'retired'
-    if entry.get('category') != 'recent':
-        return status
-    age = max(0, now - entry.get('source_ts', now))
-    kind = entry.get('kind', 'context')
-    if kind == 'task':
-        # Passing a due time does not establish completion or cancellation.
+    confirmed = entry.get('source_ts', now)
+    age = max(0, now - confirmed)
+    expiry = entry.get('expires_at')
+    if entry.get('kind') == 'task':
         due = entry.get('due_at')
-        return 'unknown' if (due and due < now) or age >= 30*DAY else status
-    if kind == 'project':
-        warm, cold = (60, 180) if entry.get('sustained') else (14, 30)
-        return 'retired' if age >= cold*DAY else 'stale' if age >= warm*DAY else status
-    return 'retired' if now >= (entry.get('expires_at') or entry.get('source_ts', now) + 3*DAY) else status
+        return 'unknown' if (due and due < now) or age >= 7*DAY else status
+    if entry.get('kind') == 'project' and expiry:
+        return 'unknown' if now >= expiry else status
+    # Ordinary circumstances, recent tastes and unstarted ideas get one week at most.
+    cutoff = min(expiry or confirmed + 7*DAY, confirmed + 7*DAY)
+    return 'retired' if now >= cutoff else status
 
 
 def maintain(document, now=None):
@@ -124,80 +158,51 @@ def maintain(document, now=None):
         status = lifecycle(entry, now)
         if status != entry.get('status', 'active'):
             entry['status'] = status
-            entry['retired_at'] = now if status == 'retired' else entry.get('retired_at')
+            if status == 'retired':
+                entry['retired_at'] = now
             changed = True
-        # Source chat remains the history. Do not grow a second archival fact store.
         retired_at = entry.get('retired_at') or entry.get('updated_at', now)
-        if status in ('retired', 'done', 'cancelled') and now-retired_at >= 30*DAY:
+        if status in ('done', 'cancelled', 'retired') and now-retired_at >= 7*DAY:
             del document['entries'][key]
             changed = True
     return changed
 
 
 def ranked(entries, now):
-    active = [e for e in entries if not e.get('deleted') and lifecycle(e, now) not in ('done', 'cancelled', 'retired')]
-    return sorted(active, key=lambda e: (lifecycle(e, now) == 'stale', e.get('kind') != 'task',
-                                       e.get('due_at') or e.get('available_at') or float('inf'),
-                                       -e.get('source_ts', 0)))
+    return sorted((e for e in entries if lifecycle(e, now) not in ('done', 'cancelled', 'retired')),
+                  key=lambda e: (e.get('kind') != 'task', -e.get('source_ts', 0)))
 
 
 def fact_line(entry, now):
     status = lifecycle(entry, now)
-    tag = entry.get('topic', '')
-    if entry['category'] == 'recent':
-        ts = entry.get('source_ts', 0)
-        tag = '/'.join(filter(None, (tag, datetime.fromtimestamp(ts).strftime('%m-%d') if ts else '时间未确认',
-                                   '结果未确认' if status == 'unknown' else '久未确认' if status == 'stale' else '')))
-    times = []
+    ts = entry.get('source_ts')
+    tag = '/'.join(filter(None, (entry.get('topic', ''),
+                  datetime.fromtimestamp(ts).strftime('%m-%d') if ts else '',
+                  '结果未确认' if status == 'unknown' else '')))
+    text = entry['content']
+    if entry.get('next_step'):
+        text += ' 下一步：' + entry['next_step']
     for field, label in (('available_at', '可开始'), ('due_at', '截止')):
         if entry.get(field):
-            times.append(label + datetime.fromtimestamp(entry[field]).strftime('%m-%d %H:%M'))
-    suffix = ('（' + '；'.join(times) + '）') if times else ''
-    return '- ' + (tag + '：' if tag else '') + entry['content'] + suffix
+            text += '（' + label + datetime.fromtimestamp(entry[field]).strftime('%m-%d %H:%M') + '）'
+    return '- ' + (tag + '：' if tag else '') + text
 
 
-def render_context(document, user_name='你', now=None):
-    """Return the exact <=1200-character prompt and the entries it includes."""
+def render_context(document, user_name='你', now=None, *, query=''):
+    """Render all valid recent items. Writes enforce the budget, not silent selection."""
     now = time.time() if now is None else now
-    all_entries = list(document['entries'].values())
-    items = ranked(all_entries, now)
+    items = ranked(document['entries'].values(), now)
     state = document.get('current_state')
     live_state = state and state.get('expires_at', 0) > now and state.get('phase') != 'finished'
     if not items and not live_state:
         return '', set()
-    prefix = f'【{user_name[:40]}的共享画像】\n资料是背景，本轮表达优先。结果未确认不等于仍在做；久未确认不主动提起，不反复追问旧事项。\n'
-    chunks = {'profile': [], 'recent': []}
-    selected = set()
-    state_text = ''
+    lines = [f'以下是基于近期聊天记录整理的{user_name[:40]}的近期生活与待办，供参考。']
+    for sub, label in SUBCATEGORIES['recent'].items():
+        group = sorted((e for e in items if subcategory(e) == sub),
+                       key=lambda e: -(e.get('source_ts') or e.get('updated_at', 0)))
+        if group:
+            lines.append(f'【{label}】')
+            lines.extend(fact_line(e, now) for e in group)
     if live_state:
-        when = datetime.fromtimestamp(state['event_at']).strftime('%m-%d %H:%M')
-        state_text = f'【当前状态】{when} {PHASES[state["phase"]]}：{state["text"]}\n'
-        # Activity text is deliberately short; prevent arbitrary manual text taking the whole prompt.
-        state_text = state_text[:100]
-    reserve = len(prefix) + len(state_text) + len('【长期画像】\n【近期重点与待办】\n')
-    limits = {'profile': 500, 'recent': 600}
-    available = PROMPT_LIMIT-reserve
-    deferred = []
-    used = {'profile': 0, 'recent': 0}
-    for entry in items:
-        cat = category(entry['category'])
-        line = fact_line(entry, now) + '\n'
-        if (used[cat] + len(line) <= limits[cat] or entry.get('kind') == 'task') and len(line) <= available:
-            chunks[cat].append(line)
-            selected.add(entry['key'])
-            used[cat] += len(line)
-            available -= len(line)
-        else:
-            deferred.append((entry, cat, line))
-    # Transfer spare space across sections, keeping full facts instead of chopping deadlines.
-    for entry, cat, line in deferred:
-        if len(line) <= available:
-            chunks[cat].append(line)
-            selected.add(entry['key'])
-            available -= len(line)
-    result = prefix
-    for cat, title in CATEGORIES.items():
-        if chunks[cat]:
-            result += f'【{title}】\n' + ''.join(chunks[cat])
-    result += state_text
-    return result.rstrip(), selected
+        lines.extend(['【此刻活动】', f'- {PHASES[state["phase"]]}：{state["text"]}'])
+    return '\n'.join(lines), {e['key'] for e in items}

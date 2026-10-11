@@ -1,11 +1,17 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>娱乐室</title><link rel="stylesheet" href="/entertainment-assets/lobby.css"></head>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>娱乐室</title><link rel="stylesheet" href="/entertainment-assets/lobby.css?v=20261011-lounge"></head>
 <body data-theme="dark" data-page="entertainment"><main class="lounge"><header><button id="backHome" class="back">‹ 小家</button><span>留一点时间，做点喜欢的事。</span></header>
-<div class="intro"><p class="eyebrow">小家的娱乐室</p><h1>今天想玩什么？</h1><p>打一局，走一段冒险，或者看看外面的世界。</p></div>
+<div class="intro"><p class="eyebrow">小家的娱乐室</p><h1>今天想玩什么？</h1><p>打一局，走一段冒险，抱抱贴贴，或者看看外面的世界。</p>
+<svg class="play-decor" viewBox="0 0 120 120" fill="none" aria-hidden="true">
+  <g transform="rotate(-16 48 54)"><rect x="24" y="18" width="43" height="62" rx="7" fill="var(--lounge-card)" stroke="currentColor" stroke-opacity=".5"/><path d="m45 35-9 14 9 14 9-14z" fill="currentColor" opacity=".75"/></g>
+  <g transform="rotate(12 78 78)"><rect x="54" y="52" width="44" height="44" rx="10" fill="var(--lounge-card)" stroke="currentColor"/><g fill="currentColor"><circle cx="66" cy="64" r="3"/><circle cx="86" cy="64" r="3"/><circle cx="76" cy="74" r="3"/><circle cx="66" cy="84" r="3"/><circle cx="86" cy="84" r="3"/></g></g>
+  <path d="M93 17v12m-6-6h12M18 85v8m-4-4h8" stroke="currentColor" stroke-linecap="round" opacity=".6"/><circle cx="103" cy="43" r="2" fill="currentColor" opacity=".6"/>
+</svg></div>
 <section class="games" aria-label="选择玩法">
 <a class="game billiards" href="/billiards"><span class="game-icon ball">8</span><div><h2>台球室</h2><p>找一位伴侣，边打边聊。</p><small id="billiardsStatus">休闲八球 · 可暂停续玩</small></div><span class="arrow">↗</span></a>
-<a class="game" href="/doudizhu"><img src="/public/funIcon_0021_斗地主.png" alt="" class="game-icon"><div><h2>斗地主</h2><p>三个人，一桌牌。</p><small>叫地主 · 出牌 · 再来一局</small></div><span class="arrow">↗</span></a>
-<a class="game" href="/ghost-forest"><img src="/public/funIcon_0017_奥罗斯幽林.png" alt="" class="game-icon"><div><h2>奥罗斯幽林</h2><p>掷下骰子，继续你的冒险。</p><small>故事 · 探索 · 角色扮演</small></div><span class="arrow">↗</span></a>
-<a class="game" href="/seeky"><img src="/public/funIcon_0022_Seeky.png" alt="" class="game-icon"><div><h2>Seeky</h2><p>去看看小鲸鱼，陪它玩一会儿。</p><small>喂食 · 照顾 · 互动</small></div><span class="arrow">↗</span></a>
-<a class="game wide" href="/playground/explore"><img src="/public/funIcon_0019_娱乐室.png" alt="" class="game-icon"><div><h2>去外面逛逛</h2><p>连接外部社区，让伴侣探索感兴趣的地方。</p><small>原娱乐室的探索、连接和行动记录都在这里</small></div><span class="arrow">↗</span></a>
+<a class="game cards" href="/doudizhu"><img src="/public/funIcon_0021_斗地主.png" alt="" class="game-icon"><div><h2>斗地主</h2><p>三个人，一桌牌。</p><small>叫地主 · 出牌 · 再来一局</small></div><span class="arrow">↗</span></a>
+<a class="game forest" href="/ghost-forest"><img src="/public/funIcon_0017_奥罗斯幽林.png" alt="" class="game-icon"><div><h2>奥罗斯幽林</h2><p>掷下骰子，继续你的冒险。</p><small>故事 · 探索 · 角色扮演</small></div><span class="arrow">↗</span></a>
+<a class="game seeky" href="/seeky"><img src="/public/funIcon_0022_Seeky.png" alt="" class="game-icon"><div><h2>Seeky</h2><p>去看看小鲸鱼，陪它玩一会儿。</p><small>喂食 · 照顾 · 互动</small></div><span class="arrow">↗</span></a>
+<a class="game hug" href="/hug?return=%2Fplayground"><img src="/public/funIcon_0029_爱的抱抱.png" alt="" class="game-icon"><div><h2>爱的抱抱</h2><p>让拍拍抱枕陪你，抱抱贴贴一会儿。</p><small>拍拍抱枕 · 红外遥控</small></div><span class="arrow">↗</span></a>
+<a class="game explore" href="/playground/explore"><img src="/public/funIcon_0019_娱乐室.png" alt="" class="game-icon"><div><h2>去外面逛逛</h2><p>连接外部社区，让伴侣探索感兴趣的地方。</p><small>原娱乐室的探索、连接和行动记录都在这里</small></div><span class="arrow">↗</span></a>
 </section><section id="continuations" class="continuations" hidden><h2>球桌还在等你</h2><div id="savedMatches"></div></section><footer>想让伴侣自行约球，可在<a href="/family-dynamics">家庭动态</a>里为两位开启台球自主行动。<br>不赶时间。玩累了，就回家聊聊天。</footer></main><script src="/static/theme.js?v=theme-20260606"></script><script src="/entertainment-assets/lobby.js"></script></body></html>

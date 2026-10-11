@@ -187,7 +187,7 @@ class HugInfraredPageTest(unittest.TestCase):
         self.assertEqual("frontend", files["/static/hug.css"]["category"])
         self.assertEqual("frontend", files["/static/hug.js"]["category"])
 
-    def test_home_app_registry_launches_the_hug_route(self):
+    def test_hug_entry_lives_in_entertainment_instead_of_home(self):
         home_path = STATIC_DIR / "home.html"
         script = """
 const fs = require('fs');
@@ -207,17 +207,11 @@ process.stdout.write(JSON.stringify(hug || null));
             encoding="utf-8",
         )
 
-        self.assertEqual(
-            {
-                "id": "hug",
-                "name": "抱抱",
-                "icon": "/public/funIcon_0029_爱的抱抱.png",
-                "url": "/hug",
-            },
-            {
-                key: json.loads(completed.stdout)[key]
-                for key in ("id", "name", "icon", "url")
-            },
+        self.assertIsNone(json.loads(completed.stdout))
+        lobby = (BASE_DIR / "entertainment" / "lobby.html").read_text(encoding="utf-8")
+        self.assertIn(
+            'href="/hug?return=%2Fplayground"',
+            lobby,
         )
 
 

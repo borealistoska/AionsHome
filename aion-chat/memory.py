@@ -62,12 +62,14 @@ LONG_TERM_MEMORY_TYPE = "important"
 
 
 def memory_kind_for_type(memory_type: str) -> str:
-    """Two-bucket memory class: summary-style records are daily; everything else is long-term."""
+    """Keep social memories separate from daily summaries and important memories."""
+    if str(memory_type or '').strip().lower() == 'friend':
+        return 'friend'
     return "daily" if str(memory_type or "").strip().lower() in SUMMARY_MEMORY_TYPES else "long_term"
 
 
 def memory_kind_label(memory_type: str) -> str:
-    return "日常" if memory_kind_for_type(memory_type) == "daily" else "长期重要"
+    return {'daily':'日常', 'long_term':'长期重要', 'friend':'朋友记忆'}[memory_kind_for_type(memory_type)]
 
 
 def _clean_evidence_summary(value, limit: int = 900) -> str:
@@ -344,6 +346,9 @@ async def fetch_source_details(memories: list[dict], keywords: list[str]) -> str
     evidence_blocks = []
     fallback_memories = []
     for mem in memories:
+        if str(mem.get('id','')).startswith('extmem_'):
+            evidence_blocks.append('[外出回忆来源]\n' + str(mem.get('evidence_summary') or '来源原文未保留'))
+            continue
         source_ids = _source_ids_for_memory(mem)
         if source_ids:
             rows = await _fetch_source_rows_by_ids(source_ids, user_name, ai_name)
@@ -1148,6 +1153,7 @@ async def _do_digest(min_messages: int = 0, allow_ai_wishes: bool = False) -> di
     返回 { ok, message, new_memories_count, processed_messages }
     """
     from ai_providers import simple_ai_call
+    from profile_digest import prepare as prepare_profile_digest, store_result as store_profile_result
 
     try:
         anchor_ts = load_digest_anchor()
@@ -1275,7 +1281,7 @@ async def _do_digest(min_messages: int = 0, allow_ai_wishes: bool = False) -> di
                 name = user_name if m["role"] == "user" else ai_name
             tag = f"[{'群聊' if src == 'group' else '私聊'}]" if has_mixed else ""
             source_id = m.get("_source_id", "")
-            lines.append(f"[{ts}][id={source_id}]{tag} {name}: {m['content'][:300]}")
+            lines.append(f"[{ts}][id={source_id}]{tag} {name}: {m['content']}")
         messages_text = date_header + "\n".join(lines)
 
         prompt = _atomic_digest_prompt(
@@ -1288,8 +1294,11 @@ async def _do_digest(min_messages: int = 0, allow_ai_wishes: bool = False) -> di
         )
 
         # 用核心模型调用
-        ai_messages = [{"role": "user", "content": prompt}]
         try:
+            profile_context = await prepare_profile_digest(group, ai_name, user_name)
+            if profile_context:
+                prompt += profile_context['prompt']
+            ai_messages = [{"role": "user", "content": prompt}]
             raw_text = await simple_ai_call(ai_messages, model_key, trace_label="memory_digest_summary")
         except Exception as e:
             print(f"[digest] 核心模型调用失败: {e}")
@@ -1300,6 +1309,13 @@ async def _do_digest(min_messages: int = 0, allow_ai_wishes: bool = False) -> di
         if not result:
             print(f"[digest] JSON 解析失败: {raw_text[:200]}")
             model_failure_detected = True
+            break
+
+        try:
+            await store_profile_result(profile_context, result)
+        except Exception as e:
+            print(f"[digest] 画像更新尚未持久化，保留本组锚点等待重试: {type(e).__name__}: {e}")
+            digest_incomplete = True
             break
 
         memory_items = _normalize_digest_memory_items(result, group)

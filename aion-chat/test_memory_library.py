@@ -132,3 +132,16 @@ class MemoryLibraryTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(item['keywords'], '生活')
         self.assertEqual(self.client.post('/api/memory-library/main', json={'content':'  '}).status_code, 422)
         self.assertEqual(self.client.get('/api/memory-library/main?start=2026-10-04&end=2026-10-03').status_code, 400)
+
+    async def test_friend_category_is_separate_and_can_be_reclassified(self):
+        for store in ('main','chatroom'):
+            url = f'/api/memory-library/{store}'
+            created = self.client.post(url, json={'content':'和朋友看兔子的约定','memory_kind':'friend'})
+            self.assertEqual(created.status_code, 200)
+            mem_id = created.json()['id']
+            friends = self.client.get(url+'?kind=friend').json()['items']
+            self.assertEqual([m['id'] for m in friends], [mem_id])
+            self.assertEqual(friends[0]['memory_kind'], 'friend')
+            self.assertNotIn(mem_id, [m['id'] for m in self.client.get(url+'?kind=long_term').json()['items']])
+            self.assertEqual(self.client.put(url+'/'+mem_id, json={'content':'约定保留','memory_kind':'long_term'}).status_code, 200)
+            self.assertEqual(self.client.get(url+'?kind=friend').json()['total'], 0)

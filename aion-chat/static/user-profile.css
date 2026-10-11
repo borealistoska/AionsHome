@@ -24,6 +24,7 @@
 .entry-copy p,.state-view p{margin:0;color:var(--text);font-size:14px;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere}
 .state-view{padding-top:6px}
 .entry-time{display:block;margin-top:4px;color:var(--text3);font-size:11px;line-height:1.6}
+.entry-progress{display:block;color:var(--text3);font-size:11px;line-height:1.6}
 .edit-button{display:grid;place-items:center;width:32px;height:32px;border:0;border-radius:7px;background:transparent;color:var(--text3);cursor:pointer}
 .edit-button:hover{background:var(--surface2);color:var(--accent)}
 .edit-button svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;pointer-events:none}
@@ -45,5 +46,16 @@
 .profile-preview pre{white-space:pre-wrap;overflow-wrap:anywhere;padding:12px;border-radius:8px;background:var(--surface2);font:inherit;line-height:1.7;max-height:400px;overflow:auto}
 .profile-group h4{margin:6px 0 3px;font-size:13px;line-height:1.4;color:var(--accent)}
 .profile-group h4+.profile-entry{padding-top:5px}
+.profile-group h5{margin:12px 0 3px;color:var(--text2);font-size:12px;font-weight:500}
+.fact-archive>summary{cursor:pointer;color:var(--accent);font-size:13px}
+.fact-archive>summary h4{display:inline}
+.fact-archive>summary span{margin-left:10px;color:var(--text3);font-size:11px}
+.preview-query{display:flex;gap:8px;margin:8px 0}
+.preview-query input{min-width:0;flex:1;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text)}
+.profile-group+.profile-group{margin-top:20px}
+.profile-archive{margin:10px 0;color:var(--text3);font-size:12px}
+.profile-archive summary{cursor:pointer;margin-bottom:6px}
 [hidden]{display:none!important}
 @media(max-width:560px){.profile-page .page-content{padding-left:12px;padding-right:12px}.profile-overview,.profile-state,.profile-section{padding:12px 14px}.state-fields{grid-template-columns:1fr}.section-heading{align-items:center}.profile-savebar{margin:0 12px calc(8px + env(safe-area-inset-bottom));flex-wrap:wrap}.profile-savebar span{flex-basis:100%}.profile-savebar .save-button{flex:1}.profile-entry{gap:8px}}
+
+.entry-copy .entry-next{color:var(--text2);font-size:13px;margin-top:3px}

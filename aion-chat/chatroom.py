@@ -574,6 +574,9 @@ async def fetch_chatroom_source_details(memories: list[dict], keywords: list[str
     user_name, ai_name, connor_name = get_chatroom_names()
     name_map = {"user": user_name, "aion": ai_name, "connor": connor_name}
     for mem in memories:
+        if str(mem.get('id','')).startswith('extmem_'):
+            evidence_blocks.append('[外出回忆来源]\n' + str(mem.get('evidence_summary') or '来源原文未保留'))
+            continue
         source_ids = _source_ids_for_chatroom_memory(mem)
         if source_ids:
             rows = []
@@ -673,7 +676,7 @@ async def save_chatroom_memory(
     emb_blob = _pack_embedding(emb) if emb else None
     mem_id = f"crm_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
     now = float(created_at) if created_at else time.time()
-    kind = "daily" if memory_kind == "daily" else "long_term"
+    kind = memory_kind if memory_kind in ('daily','friend') else 'long_term'
     async with get_db() as db:
         await db.execute(
             "INSERT INTO chatroom_memories "
@@ -694,6 +697,8 @@ async def digest_chatroom(room_id: str = None, model_key: str = None, allow_ai_w
     """对 Connor 的所有消息（1v1 + 群聊）统一进行总结，通过 Codex 生成记忆。
     支持分组（每批 20-50 条），总结后生成日记 + 可选朋友圈 + 礼物判断。
     room_id 参数保留兼容性但不再用于限定数据源。"""
+
+    from profile_digest import prepare as prepare_profile_digest, store_result as store_profile_result
 
     # 读取统一锚点（以 "connor_unified" 为 key）
     anchor_key = "connor_unified"
@@ -815,7 +820,7 @@ async def digest_chatroom(room_id: str = None, model_key: str = None, allow_ai_w
             ts = time.strftime("%m-%d %H:%M", time.localtime(m["created_at"]))
             name = {"user": user_name, "aion": ai_name, "connor": connor_name}.get(m["sender"], m["sender"])
             tag = f"[{'群聊' if m.get('_source') == 'group' else '私聊'}]" if has_mixed else ""
-            formatted.append(f"[{ts}][id={m.get('_source_id', '')}]{tag} {name}: {m['content'][:300]}")
+            formatted.append(f"[{ts}][id={m.get('_source_id', '')}]{tag} {name}: {m['content']}")
         messages_text = date_header + "\n".join(formatted)
 
         prompt_text = _atomic_digest_prompt(
@@ -827,11 +832,19 @@ async def digest_chatroom(room_id: str = None, model_key: str = None, allow_ai_w
             companion_name=connor_name,
         )
 
-        full_text = await simple_connor_cli_call(
-            prompt_text,
-            model_key,
-            trace_label="chatroom_digest_summary",
-        )
+        try:
+            profile_context = await prepare_profile_digest(group, connor_name, user_name)
+            if profile_context:
+                prompt_text += profile_context['prompt']
+            full_text = await simple_connor_cli_call(
+                prompt_text,
+                model_key,
+                trace_label="chatroom_digest_summary",
+            )
+        except Exception as e:
+            print(f"[chatroom_digest] 总结失败，保留锚点: {type(e).__name__}: {e}")
+            digest_incomplete = True
+            break
         if not full_text:
             print(f"[chatroom_digest] Connor 模型无响应，跳过该组")
             digest_incomplete = True
@@ -840,6 +853,13 @@ async def digest_chatroom(room_id: str = None, model_key: str = None, allow_ai_w
         result = _parse_digest_result(full_text)
         if not result:
             print(f"[chatroom_digest] JSON 解析失败: {full_text[:200]}")
+            digest_incomplete = True
+            break
+
+        try:
+            await store_profile_result(profile_context, result)
+        except Exception as e:
+            print(f"[chatroom_digest] 画像更新尚未持久化，保留本组锚点: {type(e).__name__}: {e}")
             digest_incomplete = True
             break
 
@@ -1112,6 +1132,7 @@ async def build_aion_group_context(
         who="aion",
         whisper_mode=whisper_mode,
         include_private_whisper=True,
+        profile_query=query_text,
     )
     if ability_block:
         history.append({"role": "user", "content": ability_block})
@@ -1207,6 +1228,7 @@ async def build_connor_group_context(
         who="connor",
         whisper_mode=whisper_mode,
         include_private_whisper=True,
+        profile_query=query_text,
     )
     if ability_block:
         history.append({"role": "user", "content": ability_block})
@@ -1309,7 +1331,7 @@ async def build_connor_1v1_context(
         messages.append({"role": "user", "content": f"[{user_name}信息]\n{wb['user_persona']}"})
         messages.append({"role": "assistant", "content": "收到，我会记住用户的信息。"})
 
-    ability_block = await build_ability_block(user_name, who="connor", whisper_mode=whisper_mode)
+    ability_block = await build_ability_block(user_name, who="connor", whisper_mode=whisper_mode, profile_query=query_text)
     if ability_block:
         messages.append({"role": "user", "content": ability_block})
     merged = await fetch_merged_timeline("connor", context_limit)

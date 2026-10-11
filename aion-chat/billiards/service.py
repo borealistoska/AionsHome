@@ -7,9 +7,23 @@ from pathlib import Path
 
 from .engine import execute
 from .store import SessionStore
+from .matches import is_active, reserves_players
 
 ACTORS = {'user', 'aion', 'connor'}
 LEASE_SECONDS = 25
+
+
+def potted_balls(game):
+    if 'potted_balls' in game:
+        return copy.deepcopy(game['potted_balls'])
+    # Older saves retain only the last shot; do not invent earlier pot order.
+    balls = [[], []]
+    shot = game['state'].get('lastShot') or {}
+    shooter = shot.get('shooter')
+    if shooter in (0, 1):
+        events = shot.get('pocketEvents', [{'ballId': ball} for ball in shot.get('pots', [])])
+        balls[shooter] = [e['ballId'] for e in events if 1 <= e['ballId'] <= 15]
+    return balls
 
 
 def update_streaks(game: dict, state: dict):
@@ -36,6 +50,7 @@ class BilliardsService:
         self.chat_locks = {}
         self.report_tasks = {}
         self.create_lock = asyncio.Lock()
+        self.invite_lock = asyncio.Lock()
         self.initialized = False
 
     def lock(self, sid):
@@ -80,21 +95,42 @@ class BilliardsService:
         if not isinstance(accuracy, (int, float)) or not 0 <= accuracy <= 100:
             raise ValueError('准度需要在 0 到 100 之间')
         async with self.create_lock:
+            yield_tables = []
             for existing in self.store.all():
-                if existing['status'] != 'finished' and set(players) & set(existing['players']):
-                    raise ValueError('参与者已有未结束的球局，请继续或结束那一局')
+                if is_active(existing) and set(players) & set(existing['players']):
+                    if 'user' in players and 'user' not in existing['players']:
+                        yield_tables.append(existing['id'])
+                    elif 'user' in players or 'user' not in existing['players'] or reserves_players(existing):
+                        raise ValueError('参与者已有未结束的球局，请继续或结束那一局')
             seed = seed if seed is not None else int(time.time() * 1000) % 1000000
             state = (await execute(op='new', seed=seed, mode=mode))['state']
+            # Pause under the table lock so a shot already committing can settle first.
+            for sid in yield_tables:
+                await self.pause(sid)
             game = {'id': uuid.uuid4().hex, 'players': list(players), 'state': state,
                     'difficulty': difficulty, 'accuracy': accuracy, 'mode': mode,
                     'status': 'paused', 'revision': 0, 'rack': 1, 'score': [0, 0],
+                    'match_format': 'best_of_3', 'match_status': 'active',
                     'losses': [0, 0], 'streaks': [{'pots': 0, 'misses': 0}, {'pots': 0, 'misses': 0}],
-                    'messages': [], 'actions': [], 'pending': None, 'last_event': None,
+                    'messages': [], 'potted_balls': [[], []], 'actions': [], 'pending': None, 'last_event': None,
                     'ai_preview': None,
                     'lease': None, 'ready_at': 0, 'last_speech_at': 0, 'room_id': '',
                     'created_at': time.time(), 'updated_at': time.time(), 'error': '', 'result_reports': []}
             self.store.save(game)
             return game
+
+    async def watch(self, *, difficulty='medium'):
+        # Share the invitation lock so a manual request and an autonomous invite
+        # cannot both start a new table or advance the same saved rack.
+        async with self.invite_lock:
+            game = next((g for g in self.store.all() if is_active(g) and 'user' not in g['players']), None)
+            if game is None:
+                game = await self.create(['aion', 'connor'], difficulty=difficulty)
+            if game['status'] == 'finished':
+                return await self.next_rack(game['id'], '', breaker=game['rack'] % 2)
+            if game['status'] == 'running':
+                return game
+            return await self.resume(game['id'], '')
 
     async def recover(self, sid):
         async with self.lock(sid):
@@ -108,12 +144,25 @@ class BilliardsService:
         if lease.get('client') != client or lease.get('until', 0) < time.time():
             raise ValueError('这个窗口没有控制球桌，请点继续取得控制')
 
+    def tables_to_yield(self, game):
+        # Called under create_lock; validate all conflicts before pausing any table.
+        tables = []
+        for existing in self.store.all():
+            if existing['id'] == game['id'] or not reserves_players(existing) or not set(existing['players']) & set(game['players']):
+                continue
+            if 'user' in game['players'] and 'user' not in existing['players']:
+                tables.append(existing['id'])
+            else:
+                raise ValueError('参与者正在另一场球局里，这桌先保留，之后再继续')
+        return tables
+
     async def resume(self, sid, client):
         await self.recover(sid)
-        async with self.lock(sid):
+        async with self.create_lock, self.lock(sid):
             game = self.get(sid)
             if game['status'] == 'finished':
                 raise ValueError('本局已经结束，可以再来一局')
+            yield_tables = self.tables_to_yield(game)
             if 'user' in game['players']:
                 if not client:
                     raise ValueError('缺少控制窗口')
@@ -121,12 +170,13 @@ class BilliardsService:
                 if lease.get('client') != client and lease.get('until', 0) > time.time():
                     raise ValueError('另一个窗口正在控制球桌，你可以在这里旁观')
                 game['lease'] = {'client': client, 'until': time.time() + LEASE_SECONDS}
+            for other_sid in yield_tables:
+                await self.pause(other_sid)
             game['status'] = 'running'
             game['ai_preview'] = None
             game['error'] = ''
             self.save(game)
         self.ensure_loop(sid)
-        self.say_later(sid, 'resume' if game['state']['shotCount'] else 'start')
         return self.get(sid)
 
     async def heartbeat(self, sid, client):
@@ -173,6 +223,7 @@ class BilliardsService:
     async def commit_pending(self, game):
         pending = game['pending']
         before = copy.deepcopy(game['state'])
+        previous_pots = potted_balls(game)
         try:
             result = await execute(op='apply', state=before, action=pending['action'], actor=pending['actor'], automatic=pending.get('automatic', False))
         except BaseException:
@@ -182,12 +233,19 @@ class BilliardsService:
                 self.store.save(game)
             raise
         game['state'] = result['state']
+        if game['state']['seed'] != before['seed']:
+            game['potted_balls'] = [[], []]
         game['actions'].append(pending['id'])
         game['actions'] = game['actions'][-1000:]
         game['pending'] = None
         game['ai_preview'] = None
         shot = pending['action']['type'] == 'shot'
         if shot:
+            last_shot = game['state'].get('lastShot') or {}
+            shooter = last_shot.get('shooter', pending['actor'])
+            events = last_shot.get('pocketEvents', [{'ballId': ball} for ball in last_shot.get('pots', [])])
+            previous_pots[shooter].extend(e['ballId'] for e in events if 1 <= e['ballId'] <= 15)
+            game['potted_balls'] = previous_pots
             update_streaks(game, game['state'])
             game['last_event'] = {'id': pending['id'], 'rack': game['rack'], 'before': before,
                                   'action': pending['action'], 'motion_ms': result['motion_ms']}
@@ -198,21 +256,31 @@ class BilliardsService:
             game['losses'][winner] = 0
             game['losses'][1-winner] += 1
             game['status'] = 'finished'
+            if game.get('match_format') == 'best_of_3' and game['score'][winner] >= 2:
+                game['match_status'] = 'completed'
             game['lease'] = None
             game.setdefault('result_reports', []).append({'rack': game['rack'], 'winner': winner,
                 'score': list(game['score']), 'reason': game['state']['result']['reason'],
                 'shots': game['state']['shotCount'], 'finished_at': time.time(),
+                'match_complete': game.get('match_status') == 'completed',
                 'published': False, 'chat_published': False})
         self.save(game)
 
-    async def next_rack(self, sid, client, *, difficulty=None, accuracy=None, mode=None, breaker=0):
+    async def next_rack(self, sid, client, *, difficulty=None, accuracy=None, mode=None, breaker=0, restart=False):
         async with self.create_lock, self.lock(sid):
             game = self.get(sid)
-            if game['status'] != 'finished':
-                raise ValueError('请先打完或结束当前球局')
-            for existing in self.store.all():
-                if existing['id'] != sid and existing['status'] != 'finished' and set(existing['players']) & set(game['players']):
-                    raise ValueError('参与者正在另一场球局里，请先结束那场球局')
+            if not is_active(game):
+                raise ValueError('这场比赛已结束，请返回大厅开始新的一场')
+            if restart:
+                if game['state']['phase'] == 'over':
+                    raise ValueError('本局已有胜负，请进入下一局')
+                if 'user' in game['players'] and game['status'] == 'running':
+                    self.check_lease(game, client)
+            elif game['status'] != 'finished' or game['state']['phase'] != 'over':
+                raise ValueError('请先打完当前球局')
+            elif game.get('match_format') != 'best_of_3' or game['rack'] >= 3 or max(game['score']) >= 2:
+                raise ValueError('这场比赛已结束，请返回大厅开始新的一场')
+            self.tables_to_yield(game)
             if breaker not in (0, 1):
                 raise ValueError('开球人无效')
             if difficulty is not None:
@@ -228,7 +296,9 @@ class BilliardsService:
                     raise ValueError('规则无效')
                 game['mode'] = mode
             game['state'] = (await execute(op='new', seed=game['state']['seed']+1, mode=game['mode'], breaker=breaker))['state']
-            game['rack'] += 1
+            game['potted_balls'] = [[], []]
+            if not restart:
+                game['rack'] += 1
             game['status'] = 'paused'
             game['streaks'] = [{'pots': 0, 'misses': 0}, {'pots': 0, 'misses': 0}]
             game['last_event'] = None
@@ -237,12 +307,17 @@ class BilliardsService:
             self.save(game)
         return await self.resume(sid, client)
 
+    async def restart_rack(self, sid, client, **options):
+        return await self.next_rack(sid, client, restart=True, **options)
+
     async def finish(self, sid, client):
         async with self.lock(sid):
             game = self.get(sid)
             if 'user' in game['players'] and game['status'] == 'running':
                 self.check_lease(game, client)
             game['status'] = 'finished'
+            if game.get('match_format') == 'best_of_3' and game.get('match_status') != 'completed':
+                game['match_status'] = 'abandoned'
             game['ai_preview'] = None
             game['lease'] = None
             self.save(game)

@@ -632,9 +632,14 @@ class TTSStreamer:
             except OSError as e:
                 log.warning("TTS cancellation cleanup failed for %s: %s", path, e)
 
+    async def abort(self):
+        """Stop synthesis and invalidate audio already queued on a client."""
+        self.cancel()
+        await self._notify({"type": "tts_cancel", "data": {"msg_id": self.msg_id}})
+
     async def _notify(self, payload: dict):
         """通过 WebSocket 或 SSE Queue 推送事件"""
-        if self._cancelled:
+        if self._cancelled and payload.get("type") != "tts_cancel":
             return
         if self._ws:
             if payload.get("type") in {"tts_chunk", "tts_done", "tts_merged"} and hasattr(self._ws, "send_tts_event"):

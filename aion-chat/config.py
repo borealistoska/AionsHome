@@ -249,14 +249,6 @@ def sanitize_filename(name):
 CUSTOM_OPENAI_PROVIDER = "custom_openai"
 CUSTOM_REASONING_EFFORTS = {"low", "high", "max"}
 MODEL_TRANSPORT_MODES = {"legacy", "safe_live"}
-SAFE_LIVE_MODEL_DEFAULTS = {
-    "Codex-Astra": "safe_live",
-    "Codex-Sol": "safe_live",
-    "Codex-6-Sol": "safe_live",
-    "Codex-6.1-Sol": "safe_live",
-    "3.8Vertex": "safe_live",
-    "官Gem3.8flash": "safe_live",
-}
 DEPRECATED_MODEL_PROVIDERS = {"gemini_cli"}
 DEPRECATED_MODEL_KEYS = {"CLI-3.1pro", "AGY-3.1pro"}
 ANTIGRAVITY_MODELS_PATH = DATA_DIR / "antigravity_models.json"
@@ -310,7 +302,6 @@ BUILTIN_MODELS = {
     # "Codex-5.5":            {"provider": "codex_cli",  "model": "gpt-5.5", "vision": True},
     # "Codex-Astra":    {"provider": "codex_cli",  "model": "gpt-6-astra", "vision": True, "transport_mode": "safe_live"},
     "Codex-5.6-Sol":      {"provider": "codex_cli",  "model": "gpt-5.6-sol", "vision": True, "transport_mode": "safe_live"},
-    "Codex-6-Sol":    {"provider": "codex_cli",  "model": "gpt-6-sol", "vision": True, "transport_mode": "safe_live"},
     "Codex-6.1-Sol":  {"provider": "codex_cli",  "model": "gpt-6.1-sol", "vision": True, "transport_mode": "safe_live"},
     # "Codex-Luna":     {"provider": "codex_cli",  "model": "gpt-5.6-luna", "vision": True},
     # "AGY（默认）": {"provider": "antigravity_cli", "model": "", "vision": False, "audio": False},
@@ -450,23 +441,13 @@ DEFAULT_MODEL = "Gemini-3.5-flash"
 
 
 def model_supports_safe_live(model_key: str | None) -> bool:
-    """Only individually approved model routes may use safe-live."""
-    key = _clean_text(model_key)
-    return key in MODELS and key in SAFE_LIVE_MODEL_DEFAULTS
+    """Every registered route uses the same checked text stream."""
+    return _clean_text(model_key) in MODELS
 
 
 def resolve_model_transport_mode(model_key: str | None) -> str:
-    """Resolve one request's transport mode, always failing closed to legacy."""
-    key = _clean_text(model_key)
-    if not model_supports_safe_live(key):
-        return "legacy"
-    overrides = normalize_model_transport_modes(SETTINGS.get("model_transport_modes"))
-    if key in overrides:
-        return overrides[key]
-    configured = _clean_text((MODELS.get(key) or {}).get("transport_mode")).lower()
-    if configured in MODEL_TRANSPORT_MODES:
-        return configured
-    return SAFE_LIVE_MODEL_DEFAULTS.get(key, "legacy")
+    """Ignore historical overrides, including those saved by older clients."""
+    return "safe_live"
 
 
 def is_model_deprecated(model_key: str | dict | None) -> bool:

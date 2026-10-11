@@ -97,6 +97,8 @@ class SafeLiveStreamGuardTest(unittest.TestCase):
         for error_text in (
             "[Gemini错误 503] upstream unavailable",
             "[自定义中转站错误] upstream unavailable",
+            "[硅基流动错误 503] upstream unavailable",
+            "[AntigravityCLI错误] process failed",
         ):
             with self.subTest(error_text=error_text):
                 guard = SafeLiveStreamGuard()
@@ -107,6 +109,35 @@ class SafeLiveStreamGuardTest(unittest.TestCase):
 
 
 class ConsumeSafeLiveStreamTest(unittest.IsolatedAsyncioTestCase):
+    async def test_normal_chat_is_capped_at_3000_but_theater_keeps_its_own_limit(self):
+        from stream_safety import THEATER_STREAM_POLICY
+        visible = []
+        source = _Chunks(["哈" * 3000, "再来一句还想继续说"])
+        result = await consume_safe_live_stream(source, visible.append)
+        self.assertEqual(result.stop_reason, "length")
+        self.assertEqual(len("".join(visible)), 3000)
+        self.assertTrue(source.closed)
+        self.assertGreater(THEATER_STREAM_POLICY.max_chars, 3000)
+
+    async def test_laughter_emoji_and_normal_short_repetitions_are_allowed(self):
+        samples = ["哈哈哈哈哈哈哈哈哈哈哈哈！😂😂😂", "好呀好呀！" * 10,
+                   "哈" * 900, "**今天真开心**，嘿嘿嘿～\n" * 4]
+        for text in samples:
+            visible = []
+            result = await consume_safe_live_stream(_Chunks(list(text)), visible.append)
+            self.assertIsNone(result.stop_reason, text[:30])
+            self.assertEqual("".join(visible), text)
+
+    async def test_sustained_paragraph_loop_across_small_chunks_stops(self):
+        paragraph = "我们先把窗户打开，让外面的风吹进来，再慢慢说说今天发生的事情，不用着急。"
+        text = paragraph * 40
+        source = _Chunks([text[i:i+7] for i in range(0, len(text), 7)])
+        visible = []
+        result = await consume_safe_live_stream(source, visible.append)
+        self.assertEqual(result.stop_reason, "repetition")
+        self.assertTrue(source.closed)
+        self.assertLess(len("".join(visible)), len(text))
+
     async def test_known_command_is_retained_for_final_processing_but_never_visible(self):
         source = _Chunks([
             "晚安呀。 [MEM",

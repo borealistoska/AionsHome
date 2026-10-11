@@ -6,12 +6,22 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .companionship import chat, names
+from .companionship import chat, names, spoken_text
 from .engine import available
-from .service import get_service
+from .service import get_service, potted_balls
+from .matches import match_info, is_active, summary, standings
 
 router = APIRouter()
 STATIC = Path(__file__).with_name('static')
+
+
+class BilliardsAssets(StaticFiles):
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        # A new lobby must never silently reuse the previous room controller.
+        if Path(path).suffix in {'.js', '.css'}:
+            response.headers['Cache-Control'] = 'no-cache'
+        return response
 
 
 class NewGame(BaseModel):
@@ -23,6 +33,10 @@ class NewGame(BaseModel):
 
 class Window(BaseModel):
     client: str = Field(default='', max_length=100)
+
+
+class WatchGame(BaseModel):
+    difficulty: Literal['low', 'medium', 'high'] = 'medium'
 
 
 class Action(Window):
@@ -47,6 +61,14 @@ def public(game, client=''):
     import time
     result = {k: v for k, v in game.items() if k not in ('actions', 'pending', 'lease')}
     result['names'] = names()
+    result['match'] = match_info(game)
+    result['potted_balls'] = potted_balls(game)
+    # Clean older table messages on read as well, without rewriting their saves.
+    result['messages'] = []
+    for message in game.get('messages', []):
+        text = message['text'] if message['sender'] == 'user' else spoken_text(message['text'])
+        if text:
+            result['messages'].append({**message, 'text': text})
     lease = game.get('lease') or {}
     result['controlled_here'] = bool(client and lease.get('client') == client and lease.get('until', 0) > time.time())
     result['busy_ms'] = max(0, int((game['ready_at'] - time.time()) * 1000))
@@ -75,10 +97,17 @@ async def page():
 async def lobby():
     service = get_service()
     await guarded(service.start())
-    return {'available': available(), 'names': names(), 'games': [
-        {key: game[key] for key in ('id', 'players', 'status', 'rack', 'score', 'updated_at', 'error')}
-        for game in service.store.all()[:30]
-    ]}
+    games = service.store.all()
+    return {'available': available(), 'names': names(),
+            'games': [summary(g) for g in games if is_active(g)],
+            'standings': standings(games), 'history_count': sum(not is_active(g) for g in games)}
+
+
+@router.get('/api/billiards/history')
+async def history(offset: int = Query(default=0, ge=0), limit: int = Query(default=10, ge=1, le=30)):
+    games = [g for g in get_service().store.all() if not is_active(g)]
+    return {'games': [summary(g) for g in games[offset:offset+limit]],
+            'total': len(games), 'has_more': offset + limit < len(games)}
 
 
 @router.post('/api/billiards')
@@ -87,6 +116,13 @@ async def create(body: NewGame):
     await guarded(service.start())
     game = await guarded(service.create(['user', body.opponent], difficulty=body.difficulty, accuracy=body.accuracy, mode=body.mode))
     return public(game)
+
+
+@router.post('/api/billiards/watch')
+async def watch(body: WatchGame):
+    service = get_service()
+    await guarded(service.start())
+    return public(await guarded(service.watch(difficulty=body.difficulty)))
 
 
 @router.get('/api/billiards/{sid}')
@@ -128,6 +164,12 @@ async def finish(sid: str, body: Window):
     return public(await guarded(get_service().finish(sid, body.client)), body.client)
 
 
+@router.post('/api/billiards/{sid}/restart')
+async def restart(sid: str, body: NextRack):
+    return public(await guarded(get_service().restart_rack(sid, body.client, difficulty=body.difficulty,
+                  accuracy=body.accuracy, mode=body.mode, breaker=body.breaker)), body.client)
+
+
 @router.post('/api/billiards/{sid}/chat')
 async def table_chat(sid: str, body: TableChat):
     await guarded(chat(get_service(), sid, body.text, body.target))
@@ -136,4 +178,4 @@ async def table_chat(sid: str, body: TableChat):
 
 def install(app):
     app.include_router(router)
-    app.mount('/billiards-assets', StaticFiles(directory=str(STATIC)), name='billiards-assets')
+    app.mount('/billiards-assets', BilliardsAssets(directory=str(STATIC)), name='billiards-assets')

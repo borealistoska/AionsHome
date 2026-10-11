@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import config
 from config import (
@@ -10,33 +10,33 @@ from routes import settings as settings_routes
 
 
 class ModelTransportModeTest(unittest.TestCase):
-    def test_codex_6_sol_is_visible_with_safe_live_transport(self):
+    def test_codex_6_1_sol_is_visible_with_safe_live_transport(self):
         self.assertEqual(
-            config.BUILTIN_MODELS["Codex-6-Sol"],
+            config.BUILTIN_MODELS["Codex-6.1-Sol"],
             {
                 "provider": "codex_cli",
-                "model": "gpt-6-sol",
+                "model": "gpt-6.1-sol",
                 "vision": True,
                 "transport_mode": "safe_live",
             },
         )
-        self.assertIn("Codex-6-Sol", dict(config.iter_visible_models()))
+        self.assertIn("Codex-6.1-Sol", dict(config.iter_visible_models()))
         with patch("config.SETTINGS", {}):
-            self.assertEqual(resolve_model_transport_mode("Codex-6-Sol"), "safe_live")
+            self.assertEqual(resolve_model_transport_mode("Codex-6.1-Sol"), "safe_live")
 
-    def test_codex_astra_is_registered_as_a_safe_live_codex_pipeline(self):
+    def test_renamed_codex_sol_is_registered_as_a_safe_live_codex_pipeline(self):
         self.assertEqual(
-            config.BUILTIN_MODELS["Codex-Astra"],
+            config.BUILTIN_MODELS["Codex-5.6-Sol"],
             {
                 "provider": "codex_cli",
-                "model": "gpt-6-astra",
+                "model": "gpt-5.6-sol",
                 "vision": True,
                 "transport_mode": "safe_live",
             },
         )
-        self.assertIn("Codex-Sol", config.BUILTIN_MODELS)
+        self.assertIn("Codex-5.6-Sol", dict(config.iter_visible_models()))
         with patch("config.SETTINGS", {}):
-            self.assertEqual(resolve_model_transport_mode("Codex-Astra"), "safe_live")
+            self.assertEqual(resolve_model_transport_mode("Codex-5.6-Sol"), "safe_live")
 
     def test_normalization_keeps_only_named_supported_modes(self):
         self.assertEqual(
@@ -50,17 +50,17 @@ class ModelTransportModeTest(unittest.TestCase):
             {"Codex-Sol": "safe_live", "relay": "legacy"},
         )
 
-    def test_missing_model_and_unknown_override_use_legacy(self):
+    def test_missing_model_cannot_bypass_live_guard(self):
         with patch("config.SETTINGS", {"model_transport_modes": {"missing": "unsafe"}}):
-            self.assertEqual(resolve_model_transport_mode("missing"), "legacy")
+            self.assertEqual(resolve_model_transport_mode("missing"), "safe_live")
 
     def test_codex_sol_has_explicit_safe_live_default(self):
         with patch("config.SETTINGS", {}):
-            self.assertEqual(resolve_model_transport_mode("Codex-Sol"), "safe_live")
+            self.assertEqual(resolve_model_transport_mode("Codex-5.6-Sol"), "safe_live")
 
-    def test_saved_legacy_override_switches_codex_back_without_restart(self):
-        with patch("config.SETTINGS", {"model_transport_modes": {"Codex-Sol": "legacy"}}):
-            self.assertEqual(resolve_model_transport_mode("Codex-Sol"), "legacy")
+    def test_saved_legacy_override_no_longer_disables_live_stream(self):
+        with patch("config.SETTINGS", {"model_transport_modes": {"Codex-5.6-Sol": "legacy"}}):
+            self.assertEqual(resolve_model_transport_mode("Codex-5.6-Sol"), "safe_live")
 
     def test_stable_aion_models_have_safe_live_defaults(self):
         with (
@@ -73,7 +73,7 @@ class ModelTransportModeTest(unittest.TestCase):
             self.assertEqual(resolve_model_transport_mode("3.8Vertex"), "safe_live")
             self.assertEqual(resolve_model_transport_mode("官Gem3.8flash"), "safe_live")
 
-    def test_saved_legacy_overrides_keep_aion_models_disabled_after_reload(self):
+    def test_saved_legacy_overrides_no_longer_disable_aion_live_stream(self):
         persisted = {
             "model_transport_modes": {
                 "3.8Vertex": "legacy",
@@ -87,15 +87,15 @@ class ModelTransportModeTest(unittest.TestCase):
                 "官Gem3.8flash": {"provider": "gemini"},
             }),
         ):
-            self.assertEqual(resolve_model_transport_mode("3.8Vertex"), "legacy")
-            self.assertEqual(resolve_model_transport_mode("官Gem3.8flash"), "legacy")
+            self.assertEqual(resolve_model_transport_mode("3.8Vertex"), "safe_live")
+            self.assertEqual(resolve_model_transport_mode("官Gem3.8flash"), "safe_live")
 
-    def test_capability_mismatch_fails_closed_to_legacy(self):
+    def test_new_relay_model_uses_live_stream_without_allowlist(self):
         with (
             patch("config.SETTINGS", {"model_transport_modes": {"relay": "safe_live"}}),
             patch.dict("config.MODELS", {"relay": {"provider": "custom_openai"}}, clear=True),
         ):
-            self.assertEqual(resolve_model_transport_mode("relay"), "legacy")
+            self.assertEqual(resolve_model_transport_mode("relay"), "safe_live")
 
 
 class ModelTransportSettingsApiTest(unittest.IsolatedAsyncioTestCase):
@@ -125,23 +125,20 @@ class ModelTransportSettingsApiTest(unittest.IsolatedAsyncioTestCase):
             settings_routes,
             "iter_visible_models",
             return_value=iter([
-                ("Codex-Sol", {"provider": "codex_cli"}),
+                ("Codex-5.6-Sol", {"provider": "codex_cli"}),
                 ("relay", {"provider": "custom_openai"}),
             ]),
-        ), patch.object(
-            settings_routes,
-            "resolve_model_transport_mode",
-            side_effect=lambda key: "safe_live" if key == "Codex-Sol" else "legacy",
-        ):
+        ), patch.dict(config.MODELS, {"relay": {"provider": "custom_openai"}}        ), patch.object(settings_routes.antigravity_cli, "discover_models", new=AsyncMock(return_value=[])), \
+                patch.object(settings_routes, "replace_antigravity_models"):
             rows = await settings_routes.list_models()
 
         self.assertEqual(
             {row["key"]: row["transport_mode"] for row in rows},
-            {"Codex-Sol": "safe_live", "relay": "legacy"},
+            {"Codex-5.6-Sol": "safe_live", "relay": "safe_live"},
         )
         self.assertEqual(
             {row["key"]: row["supports_safe_live"] for row in rows},
-            {"Codex-Sol": True, "relay": False},
+            {"Codex-5.6-Sol": True, "relay": True},
         )
 
 

@@ -903,6 +903,17 @@ function stopLiveTTSQueue() {
   }
 }
 
+function cancelTTSMessage(msgId) {
+  if (!msgId) return;
+  suppressTTSMsg(msgId);
+  const index = ttsPlayOrder.indexOf(msgId);
+  if (index === 0) stopLiveTTSQueue();
+  else if (index > 0) {
+    delete ttsChunkQueues[msgId];
+    ttsPlayOrder.splice(index, 1);
+  }
+}
+
 function suppressTTSMsg(msgId) {
   if (msgId) ttsSuppressedMsgIds.add(msgId);
 }
@@ -1185,7 +1196,6 @@ function finishTTSForMsg(msgId, createdAt, targetClientId) {
   if (targetClientId && targetClientId !== _clientId) return;
   const ts = Number(createdAt || 0);
   if (ttsSuppressedMsgIds.has(msgId) || (ts && ts < ttsAcceptAfter)) {
-    ttsSuppressedMsgIds.delete(msgId);
     return;
   }
   // 标记某条消息的 TTS 分段全部到达，如果已经播完所有分段则清理
@@ -1610,6 +1620,8 @@ function handleSync(msg) {
   } else if (type === "tts_chunk") {
     // 服务端流式 TTS 分段音频到达
     enqueueTTSChunk(data.msg_id, data.seq, data.url, data.created_at, data.target_client_id, data.text, data.expressive, data.parent_msg_id);
+  } else if (type === "tts_cancel") {
+    cancelTTSMessage(data.msg_id);
   } else if (type === "tts_done") {
     // 服务端通知该消息的所有 TTS 分段已推送完毕
     finishTTSForMsg(data.msg_id, data.created_at, data.target_client_id);
@@ -2109,10 +2121,15 @@ function addErrorToSystemLog(errorMsg, model) {
   addSystemLog(d);
 }
 
-function handleRealtimeStreamError(msgId, errorText, modelKey) {
+function handleRealtimeStreamError(msgId, errorText, modelKey, savedMessage) {
   _stopTypingAnim();
   if (msgId) {
-    currentMessages = currentMessages.filter(message => message.id !== msgId);
+    cancelTTSMessage(msgId);
+    if (savedMessage) upsertCurrentMessage(savedMessage);
+    else {
+      const partial = currentMessages.find(message => message.id === msgId);
+      if (partial) partial.content = (partial.content === '...' ? '' : partial.content) + '\n\n[' + (errorText || '回复已停止') + ']';
+    }
     renderMessages();
   }
   streamingAiId = null;
@@ -2963,6 +2980,7 @@ async function _processSSEStream(res) {
         try {
           const data = JSON.parse(line.slice(6));
           if (!_chatControl.accepts(data, generation)) continue;
+          if (data.type === "tts_cancel") { cancelTTSMessage(data.data?.msg_id); continue; }
           if (data.type === "start") {
             aiMsgId = data.id;
             const existing = currentMessages.find(m => m.id === aiMsgId);
@@ -2996,7 +3014,7 @@ async function _processSSEStream(res) {
             }
             scrollBottom();
           } else if (data.type === "stream_error") {
-            handleRealtimeStreamError(aiMsgId, data.content, $("modelSelect")?.value);
+            handleRealtimeStreamError(aiMsgId, data.content, $("modelSelect")?.value, data.message);
           } else if (data.type === "debug" && aiMsgId) {
             msgDebugData[aiMsgId] = data;
             renderDebugBar(aiMsgId);
@@ -3153,6 +3171,7 @@ async function saveEdit(id) {
         try {
           const data = JSON.parse(line.slice(6));
           if (!_chatControl.accepts(data, generation)) continue;
+          if (data.type === "tts_cancel") { cancelTTSMessage(data.data?.msg_id); continue; }
           if (data.type === 'start') {
             _stopTypingAnim();
             // 替换临时思考占位为真正的 AI 消息
@@ -3183,7 +3202,7 @@ async function saveEdit(id) {
             }
             scrollBottom();
           } else if (data.type === 'stream_error') {
-            handleRealtimeStreamError(aiMsgId, data.content, $("modelSelect")?.value);
+            handleRealtimeStreamError(aiMsgId, data.content, $("modelSelect")?.value, data.message);
           } else if (data.type === 'debug' && aiMsgId) {
             msgDebugData[aiMsgId] = data;
             renderDebugBar(aiMsgId);
@@ -3289,6 +3308,7 @@ async function regenerateMsg(aiMsgId) {
         try {
           const d = JSON.parse(line.slice(6));
           if (!_chatControl.accepts(d, generation)) continue;
+          if (d.type === "tts_cancel") { cancelTTSMessage(d.data?.msg_id); continue; }
           if (d.type === "start") {
             newId = d.id;
             streamingAiId = newId;
@@ -3310,7 +3330,7 @@ async function regenerateMsg(aiMsgId) {
             updatePrivateStreamingMessage(newId, display);
             scrollBottom();
           } else if (d.type === "stream_error") {
-            handleRealtimeStreamError(newId, d.content, $("modelSelect")?.value);
+            handleRealtimeStreamError(newId, d.content, $("modelSelect")?.value, d.message);
           } else if (d.type === "debug" && newId) {
             msgDebugData[newId] = d;
             renderDebugBar(newId);
@@ -5419,7 +5439,8 @@ function syncSubPageMode(url) {
 const persistentSubPageFrames = new Map();
 let transientSubPageFrame = $('subPageFrame');
 let activeSubPageFrame = null;
-let _aionAppForeground = false;
+// Browsers have no Android lifecycle callback; use their actual visibility.
+let _aionAppForeground = !navigator.userAgent.includes('AionChatApp') && !document.hidden;
 let _aionPhoneCameraCaptureActive = false;
 
 function notifySubPageLifecycle(frame, visible) {
@@ -5437,6 +5458,12 @@ window.onAionAppForegroundChanged = function(active) {
   _aionAppForeground = !!active;
   notifySubPageLifecycle(activeSubPageFrame, !!activeSubPageFrame);
 };
+
+document.addEventListener('visibilitychange', () => {
+  if (!navigator.userAgent.includes('AionChatApp')) {
+    window.onAionAppForegroundChanged(!document.hidden);
+  }
+});
 
 window.onAionPhoneCameraCaptureState = function(active) {
   _aionPhoneCameraCaptureActive = !!active;

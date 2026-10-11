@@ -1,8 +1,32 @@
 """Model calls are only for table talk. All game facts come from saved results."""
 import asyncio
 import json
+import re
 import time
 import uuid
+from .matches import match_info, is_active, reserves_players
+
+
+def spoken_text(text):
+    """Keep dialogue while removing private thoughts and PAT/voice markup."""
+    text = re.sub(r'[\[【](?:心里嘀咕|内心嘀咕|内心独白|心理活动)\s*[：:][^\]】]*(?:[\]】]|$)', '', text)
+    text = re.sub(r'<(think|thinking)>[\s\S]*?(?:</\1>|$)', '', text, flags=re.I)
+    def voice(match):
+        payload = match.group(1)
+        content = re.search(r'(?:^|[|｜])\s*(?:内容|台词)\s*[=：:]\s*(.*)', payload, flags=re.S)
+        return content.group(1).strip() if content else ('' if '方向=' in payload else payload.strip())
+    text = re.sub(r'[\[【]语音\s*[|｜:：]\s*([^\]】]*)(?:[\]】]|$)', voice, text)
+    text = re.sub(r'\[PAT\s*[：:]\s*[^\]]*(?:\]|$)', '', text, flags=re.I)
+    return text.strip()
+
+
+def table_context_text(text):
+    """Clean a table-only copy of daily context, retaining speech and timestamps."""
+    text = re.sub(
+        r'(?m)^\[(?:能力与工具规则|系统能力)\][ \t]*\r?\n[\s\S]*?(?=^\[[^\]\n:：|]+\][ \t]*$|\Z)',
+        '', text,
+    )
+    return spoken_text(text)
 
 
 def names():
@@ -23,7 +47,7 @@ def facts(game, labels):
                              'remaining': remaining if group else None,
                              'consecutive_pots': streak['pots'], 'consecutive_misses': streak['misses'],
                              'consecutive_losses': game['losses'][seat]})
-    return {'rack': game['rack'], 'status': game['status'], 'score': game['score'],
+    return {'rack': game['rack'], 'status': game['status'], 'score': game['score'], 'match': match_info(game),
             'players': participants, 'turn': labels[game['players'][state['turn']]],
             'phase': state['phase'], 'last_shot': state.get('lastShot'), 'result': state.get('result')}
 
@@ -31,10 +55,14 @@ def facts(game, labels):
 def reaction_reason(game, reason, *, now=None):
     now = time.time() if now is None else now
     if reason in ('start', 'resume'):
-        return '开局打个招呼' if reason == 'start' else '对方回到台球桌，接着刚才的球局'
+        return ''
     if game['state']['phase'] == 'over':
+        if match_info(game)['status'] == 'completed':
+            return '三局两胜的整场比赛已经结束，聊聊最终赢家和比分，不要再称下一局为决胜局'
+        if 'user' not in game['players']:
+            return '本局分出胜负，今天先收杆；比分保留，下次重新约球再继续这一场，不要说马上开下一局'
         return '本局分出胜负，聊聊真实结果和要不要再来一局'
-    if now - game.get('last_speech_at', 0) < 35:
+    if now - game.get('last_speech_at', 0) < 30:
         return ''
     shot = game['state'].get('lastShot') or {}
     if shot.get('foul'):
@@ -54,20 +82,31 @@ async def model_text(actor, game, instruction):
     from autonomy import _actor_context, _call_actor
     labels = names()
     context = await _actor_context(actor, 24)
+    context = [{**message, 'content': table_context_text(message['content'])} for message in context]
+    # An explicit system message also prevents the CLI from reinjecting the full persona.
+    context.insert(0, {'role': 'system', 'content': (
+        '此刻在小家台球室，保留人设、关系和之前聊天的记忆，根据真实球况自然闲聊。'
+        '只输出说给在场人听的普通文字，不使用工具指令、语音标记或内心旁白；不要写旁白、动作、神态、心理描写或舞台提示；不要用括号、星号补充这些内容。'
+    )})
     context.append({'role': 'user', 'content': (
         '[当前场景：小家台球室]\n'
         f'你是{labels[actor]}，这局在场的是' + '、'.join(labels[p] for p in game['players']) + '。\n'
         '你和他们一起轻松打球，保持原本人设和关系。算法替你计算、击球，以下为真实已结算球况。'
         '只需自然聊天，不要计算角度力度、输出操作指令、调用工具或编造进球。'
-        '剩球数是本局进度，score 是双方已赢局数。可以聊天、夸赞、调侃，不必每句讲球。\n'
+        '剩球数是本局进度，score 是双方已赢局数。可以聊天、夸赞、调侃，不必每句讲球。说话简短自然，酒桌上的闲聊。\n'
+        'match.format 为 best_of_3 时是三局两胜、先赢两局结束整场；deciding 表示决胜局，match_point 表示赛点。\n'
         + json.dumps(facts(game, labels), ensure_ascii=False) + '\n'
-        '最近桌边对话：\n' + '\n'.join(f"{labels.get(m['sender'], m['sender'])}：{m['text']}" for m in game['messages'][-12:])
+        '最近桌边对话：\n' + '\n'.join(f"{labels.get(m['sender'], m['sender'])}：{table_context_text(m['text'])}" for m in game['messages'][-12:])
         + '\n\n' + instruction
     )})
     return (await asyncio.wait_for(_call_actor(actor, context), 150)).strip()
 
 
 async def append_message(service, sid, sender, text, *, rack=None):
+    if sender != 'user':
+        text = spoken_text(text)
+        if not text:
+            return None
     async with service.lock(sid):
         game = service.get(sid)
         if rack is not None and game['rack'] != rack:
@@ -115,6 +154,8 @@ async def react(service, sid, reason):
             return
         async with lock:
             game = service.get(sid)
+            if game['status'] == 'paused' or game.get('match_status') == 'abandoned':
+                return
             trigger = reaction_reason(game, reason)
             if not trigger:
                 return
@@ -128,8 +169,11 @@ async def react(service, sid, reason):
             actor = game['players'][seat]
             reply = await model_text(actor, game, f'接话机会：{trigger}。你可以主动说一两句；不想说则只返回 [SILENT]。')
             if reply and '[SILENT]' not in reply:
-                await append_message(service, sid, actor, reply, rack=rack)
-                if len(ai_seats) == 2:
+                message = await append_message(service, sid, actor, reply, rack=rack)
+                if message and len(ai_seats) == 2:
+                    latest = service.get(sid)
+                    if latest['status'] == 'paused' or latest.get('match_status') == 'abandoned' or latest['rack'] != rack:
+                        return
                     other = game['players'][1-seat]
                     reply = await model_text(other, service.get(sid), '另一位刚在球桌边说话，想回应就简短接一句，否则返回 [SILENT]。')
                     if reply and '[SILENT]' not in reply:
@@ -164,6 +208,8 @@ async def publish_result(service, sid):
         if not result['published']:
             winner = game['players'][result['winner']]
             detail = f"第{result['rack']}局，{labels[winner]}获胜；{result['reason']}。局数 {result['score'][0]}:{result['score'][1]}，共{result['shots']}杆。"
+            if result.get('match_complete'):
+                detail += f"三局两胜整场结束，{labels[winner]}赢得本场比赛。"
             await append_idle_event(actor, 'billiards_result', ' & '.join(labels[p] for p in game['players']) + '打完了一局台球', detail, target_type='billiards', target_id=sid, metadata={'billiards_id': sid, 'rack': result['rack']})
             await mark(result['rack'], published=True)
 
@@ -184,25 +230,45 @@ async def available_for_autonomy(actor):
     if not available() or not cfg.get('enabled') or not cfg.get('actions', {}).get('billiards_play'):
         return False
     service = get_service()
-    return not any(g['status'] != 'finished' and set(g['players']) & {actor, other} for g in service.store.all())
+    return not any(reserves_players(g) and set(g['players']) & {actor, other} for g in service.store.all())
 
 
 async def invite(actor):
     from .service import get_service
+    service = get_service()
+    await service.start()
+    # Simultaneous wake-ups should not produce two invitations for the same pair.
+    async with service.invite_lock:
+        return await _invite(actor, service)
+
+
+async def _invite(actor, service):
     from autonomy import _ask_actor_json, append_idle_event
     if not await available_for_autonomy(actor):
         return {'message': '暂时没有空闲的球桌搭档'}
     labels = names()
     other = 'connor' if actor == 'aion' else 'aion'
-    decision = await _ask_actor_json(other, f'{labels[actor]}想邀请你在家里打一局休闲八球，算法负责击球。你可以答应或婉拒。只返回 JSON：{{"accept":true或false,"message":"自然的回应"}}')
+    saved = next((g for g in service.store.all() if is_active(g) and 'user' not in g['players']), None)
+    continuation = '' if saved is None else f'双方已有一场未完成的比赛，比分 {saved["score"][0]}:{saved["score"][1]}（按 {labels[saved["players"][0]]}、{labels[saved["players"][1]]} 的顺序）；这次从存档继续。'
+    decision = await _ask_actor_json(other, f'{labels[actor]}想邀请你在家里打一局休闲八球，算法负责击球。{continuation}每次邀请只打一局，整场比分保留到下次再约。你可以答应或婉拒。只返回 JSON：{{"accept":true或false,"message":"自然的回应"}}')
     accepted = decision.get('accept') is True
+    if accepted and not await available_for_autonomy(actor):
+        return {'message': '参与者已有别的比赛，这次先不打，之前的球局会保留', 'accepted': False}
     detail = str(decision.get('message') or ('好，来一局。' if accepted else '这会儿先不打。'))
     await append_idle_event(actor, 'billiards_invite', f'{labels[actor]}邀请{labels[other]}打台球', detail, metadata={'accepted': accepted})
     if not accepted:
         return {'message': detail, 'accepted': False}
-    service = get_service()
-    await service.start()
-    game = await service.create([actor, other])
+    try:
+        if saved:
+            current = service.get(saved['id'])
+            if current['status'] == 'finished':
+                game = await service.next_rack(current['id'], '', breaker=current['rack'] % 2)
+            else:
+                game = await service.resume(current['id'], '')
+        else:
+            game = await service.create([actor, other])
+            game = await service.resume(game['id'], '')
+    except ValueError:
+        return {'message': '球桌状态刚刚变化，这次先不打，已有球局会保留', 'accepted': False}
     await append_message(service, game['id'], other, detail)
-    await service.resume(game['id'], '')
-    return {'message': f"{labels[actor]}和{labels[other]}开始了一局台球", 'accepted': True, 'billiards_id': game['id']}
+    return {'message': f"{labels[actor]}和{labels[other]}{'继续' if saved else '开始'}了一局台球，打完这局先收杆", 'accepted': True, 'billiards_id': game['id']}

@@ -199,7 +199,7 @@ async def list_memories(
     """Cursor-paginated memories; the former unbounded response was slow outdoors."""
     search = (q or "").strip().lower()
     kind = str(kind or "all").strip().lower()
-    if kind not in {"all", "daily", "long_term"}:
+    if kind not in {"all", "daily", "long_term", "friend"}:
         raise HTTPException(status_code=400, detail="无效的记忆分类")
     where = ["COALESCE(archive_state,'active')='active'"]
     params: list = []
@@ -211,7 +211,11 @@ async def list_memories(
         where.append(kind_sql)
         filtered_where.append(kind_sql)
     elif kind == "long_term":
-        kind_sql = "LOWER(type) NOT IN ('daily','digest','seeky_digest','seeky_compressed')"
+        kind_sql = "LOWER(type) NOT IN ('daily','digest','seeky_digest','seeky_compressed','friend')"
+        where.append(kind_sql)
+        filtered_where.append(kind_sql)
+    elif kind == 'friend':
+        kind_sql = "LOWER(type)='friend'"
         where.append(kind_sql)
         filtered_where.append(kind_sql)
     if before is not None:
@@ -231,8 +235,9 @@ async def list_memories(
             "SELECT COUNT(*) AS total, "
             "SUM(CASE WHEN LOWER(type) IN ('daily','digest','seeky_digest','seeky_compressed') "
             "THEN 1 ELSE 0 END) AS daily, "
-            "SUM(CASE WHEN LOWER(type) NOT IN ('daily','digest','seeky_digest','seeky_compressed') "
-            "THEN 1 ELSE 0 END) AS long_term "
+            "SUM(CASE WHEN LOWER(type) NOT IN ('daily','digest','seeky_digest','seeky_compressed','friend') "
+            "THEN 1 ELSE 0 END) AS long_term, "
+            "SUM(CASE WHEN LOWER(type)='friend' THEN 1 ELSE 0 END) AS friend "
             "FROM memories WHERE COALESCE(archive_state,'active')='active'",
         )
         count_row = await cur.fetchone()
@@ -241,6 +246,7 @@ async def list_memories(
             "all": total,
             "daily": int(count_row["daily"] or 0),
             "long_term": int(count_row["long_term"] or 0),
+            "friend": int(count_row['friend'] or 0),
         }
         filtered_total = total
         if search or kind != "all":
@@ -369,10 +375,10 @@ async def update_memory(mem_id: str, body: MemoryUpdate):
 
 @router.patch("/api/memories/{mem_id}/kind")
 async def update_memory_kind(mem_id: str, body: MemoryKindUpdate):
-    selected_kind = "daily" if body.memory_kind == "daily" else "long_term" if body.memory_kind == "long_term" else ""
+    selected_kind = body.memory_kind if body.memory_kind in ('daily','long_term','friend') else ''
     if not selected_kind:
-        raise HTTPException(status_code=400, detail="memory_kind must be daily or long_term")
-    new_type = "daily" if selected_kind == "daily" else "important"
+        raise HTTPException(status_code=400, detail="memory_kind must be daily, long_term or friend")
+    new_type = {'daily':'daily','long_term':'important','friend':'friend'}[selected_kind]
     async with get_db() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute("SELECT id FROM memories WHERE id=?", (mem_id,))

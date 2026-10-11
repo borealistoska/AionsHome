@@ -220,6 +220,7 @@ async def build_ability_block(
     who: str = "aion",
     model_key: str | None = None,
     excluded_capabilities: set[str] | None = None,
+    profile_query: str = '',
 ) -> str:
     """构建 [系统能力] 文本块，who 参数用于 Connor 等角色的细微措辞差异"""
     parts = []
@@ -262,12 +263,20 @@ async def build_ability_block(
     if "post_sentinel" not in (excluded_capabilities or set()):
         try:
             from post_sentinel import build_context as build_profile_context
-            profile_context = await build_profile_context()
+            profile_context = await build_profile_context(query=profile_query)
             if profile_context:
                 parts.append(profile_context)
         except Exception:
             pass
 
+    # Shared by private and home group chat; these are background memories, never chat rows.
+    try:
+        from external_memories import recent_context
+        outside = await recent_context(who)
+        if outside:
+            parts.append(outside)
+    except (OSError, aiosqlite.Error):
+        pass
     return "\n\n".join(parts)
 
 

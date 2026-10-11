@@ -7,6 +7,36 @@ const vm = require('node:vm');
 const read = file => fs.readFileSync(path.join(__dirname, 'static', file), 'utf8');
 const block = (s, start, end) => s.slice(s.indexOf(start), s.indexOf(end, s.indexOf(start)));
 
+function subPageLifecycle(userAgent, hidden = false) {
+  const events = {}, foreground = [];
+  const frame = { dataset: {}, contentWindow: { onAionAppForegroundChanged: value => foreground.push(value) } };
+  const ctx = vm.createContext({
+    navigator: { userAgent }, document: { hidden, addEventListener: (name, fn) => events[name] = fn },
+    window: {}, activeSubPageFrame: frame,
+  });
+  vm.runInContext(block(read('chat.js'), 'let _aionAppForeground =', 'window.onAionPhoneCameraCaptureState ='), ctx);
+  ctx.notifySubPageLifecycle(frame, true);
+  return { ctx, events, foreground };
+}
+
+test('desktop subpages start in foreground and follow browser visibility', () => {
+  const { ctx, events, foreground } = subPageLifecycle('Chrome');
+  assert.deepEqual(foreground, [true], 'the visible billiards iframe must be allowed to draw');
+  ctx.document.hidden = true; events.visibilitychange();
+  ctx.document.hidden = false; events.visibilitychange();
+  assert.deepEqual(foreground, [true, false, true]);
+  assert.deepEqual(subPageLifecycle('Chrome', true).foreground, [false]);
+});
+
+test('Android subpages still wait for and obey native foreground callbacks', () => {
+  const { ctx, events, foreground } = subPageLifecycle('Chrome AionChatApp/1.0');
+  assert.deepEqual(foreground, [false]);
+  ctx.window.onAionAppForegroundChanged(true);
+  ctx.window.onAionAppForegroundChanged(false);
+  ctx.document.hidden = false; events.visibilitychange?.();
+  assert.deepEqual(foreground, [false, true, false]);
+});
+
 test('hidden retained pages stop sockets and reconnect timers; showing them reconciles once', () => {
   const sockets = [], events = {}, timers = new Map();
   let reconciles = 0, messages = 0, timerId = 0;

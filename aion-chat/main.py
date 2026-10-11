@@ -104,6 +104,8 @@ from asset_manifest import get_client_asset_manifest
 from home_assistant_events import ha_event_listener
 from wechat_openclaw_runtime import openclaw_weixin_runtime
 from wechat_mode_dispatcher import wechat_mode_dispatcher
+from qq_social_process import supervise as supervise_qq_social
+from routes import qq_social as qq_social_routes
 
 
 security_access_service = SecurityAccessService(DATA_DIR / "security_access")
@@ -211,6 +213,7 @@ async def lifespan(app: FastAPI):
     ha_event_listener.start()
     wechat_mode_dispatcher.start()
     openclaw_weixin_runtime.start()
+    qq_social_task = asyncio.create_task(supervise_qq_social())
     security_access_service.start(manager.broadcast)
     try:
         from billiards.service import get_service as billiards_service
@@ -220,6 +223,8 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        qq_social_task.cancel()
+        await asyncio.gather(qq_social_task, return_exceptions=True)
         await post_sentinel.stop()
         try:
             from billiards.service import get_service as billiards_service
@@ -369,6 +374,7 @@ app.include_router(xhs_lite_routes.router)
 app.include_router(capabilities_routes.router)
 app.include_router(english_corner_routes.router)
 app.include_router(wechat_routes.router)
+app.include_router(qq_social_routes.router)
 app.include_router(sync_routes.router)
 app.include_router(app_supervision_routes.router)
 app.include_router(homecoming_routes.router)

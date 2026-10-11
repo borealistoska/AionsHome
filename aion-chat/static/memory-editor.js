@@ -90,7 +90,7 @@
           </label>
           <label class="memory-editor-field">
             <span class="memory-editor-label">记忆标签</span>
-            <select name="kind"><option value="long_term">长期重要</option><option value="daily">日常</option></select>
+            <select name="kind"><option value="long_term">长期重要</option><option value="daily">日常</option><option value="friend">朋友记忆</option></select>
           </label>
           <details class="memory-editor-details">
             <summary>更多设置 · 关键词、重要度</summary>
@@ -132,7 +132,7 @@
     if (dialog.open) return;
     options = config;
     field('content').value = config.content || '';
-    field('kind').value = config.kind === 'daily' ? 'daily' : 'long_term';
+    field('kind').value = ['daily','friend'].includes(config.kind) ? config.kind : 'long_term';
     field('keywords').value = config.keywords || '';
     field('importance').value = config.importance ?? 0.5;
     dialog.querySelector('.memory-editor-title').textContent = config.title || '编辑记忆';

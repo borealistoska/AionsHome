@@ -10,6 +10,8 @@ import json
 import random
 import time
 from collections import Counter, defaultdict
+from functools import lru_cache
+from itertools import combinations
 from typing import Optional
 
 import aiosqlite
@@ -144,7 +146,7 @@ def _public_state(state: dict, for_player: Optional[str] = None) -> dict:
             "role": "landlord" if state.get("landlord") == p else "farmer",
             "handCount": len(hand),
         }
-        if p == "user" or p == for_player:
+        if p == (for_player or "user"):
             players[p]["hand"] = _sort_cards(hand)
 
     return {
@@ -292,14 +294,23 @@ def _generate_candidate_moves(hand: list[str]) -> list[list[str]]:
         if len(cards) >= 3:
             triple = _cards_for_rank(by_rank, rank, 3)
             moves.append(triple)
-            singles = [c for c in hand if _card_rank(c) != rank]
-            if singles:
-                moves.append(triple + [singles[0]])
+            for r in RANKS:
+                if r != rank and by_rank.get(r):
+                    moves.append(triple + _cards_for_rank(by_rank, r, 1))
             pair_ranks = [r for r in RANKS if r != rank and len(by_rank.get(r, [])) >= 2]
-            if pair_ranks:
-                moves.append(triple + _cards_for_rank(by_rank, pair_ranks[0], 2))
+            for r in pair_ranks:
+                moves.append(triple + _cards_for_rank(by_rank, r, 2))
         if len(cards) == 4:
-            moves.append(_cards_for_rank(by_rank, rank, 4))
+            bomb = _cards_for_rank(by_rank, rank, 4)
+            moves.append(bomb)
+            others = [r for r in RANKS if r != rank and by_rank.get(r)]
+            for a, b in combinations(others, 2):
+                moves.append(bomb + by_rank[a][:1] + by_rank[b][:1])
+            pairs = [r for r in others if len(by_rank[r]) >= 2]
+            for r in pairs:
+                moves.append(bomb + by_rank[r][:2])
+            for a, b in combinations(pairs, 2):
+                moves.append(bomb + by_rank[a][:2] + by_rank[b][:2])
 
     if by_rank.get("BJ") and by_rank.get("RJ"):
         moves.append(["BJ", "RJ"])
@@ -337,6 +348,13 @@ def _generate_candidate_moves(hand: list[str]) -> list[list[str]]:
                 for r in run:
                     cards.extend(_cards_for_rank(by_rank, r, 3))
                 moves.append(cards)
+                others = [r for r in RANKS if r not in run and by_rank.get(r)]
+                # Match the table's existing rule: single wings have distinct ranks.
+                for wings in combinations(others, len(run)):
+                    moves.append(cards + [by_rank[r][0] for r in wings])
+                pairs = [r for r in others if len(by_rank[r]) >= 2]
+                for wings in combinations(pairs, len(run)):
+                    moves.append(cards + [c for r in wings for c in by_rank[r][:2]])
 
     seen = set()
     unique = []
@@ -371,7 +389,7 @@ def legal_moves(state: dict, player: str) -> list[dict]:
         })
 
     moves.sort(key=lambda m: (0 if m["action"] == "pass" else len(m["cards"]), m.get("rank", -1)))
-    return moves[:180]
+    return moves
 
 
 def _is_teammate(state: dict, player: str, other: str) -> bool:
@@ -399,135 +417,158 @@ def _min_count(state: dict, players: list[str]) -> int:
     return min(counts) if counts else 99
 
 
-def _move_priority(move: dict) -> int:
-    return {
-        "single": 0,
-        "pair": 1,
-        "triple_single": 2,
-        "triple_pair": 3,
-        "triple": 4,
-        "straight": 5,
-        "pair_straight": 6,
-        "airplane_single": 7,
-        "airplane_pair": 8,
-        "airplane": 9,
-        "four_two_singles": 10,
-        "four_two_pairs": 11,
-        "bomb": 30,
-        "rocket": 31,
-    }.get(move.get("type"), 12)
+def _hand_turn_counter(hand: list[str]):
+    """Minimum number of legal melds, ignoring opponents; cache only this decision."""
+    patterns = set()
+    for cards in _generate_candidate_moves(hand):
+        if classify_cards(cards):
+            counts = _counts(cards)
+            patterns.add(tuple(counts[r] for r in RANKS))
+    covering = [[] for _ in RANKS]
+    for pattern in patterns:
+        used = [(i, n) for i, n in enumerate(pattern) if n]
+        for i, _ in used:
+            covering[i].append((sum(pattern), used))
+    for options in covering:
+        options.sort(key=lambda item: (-item[0], item[1]))
+
+    @lru_cache(maxsize=None)
+    def turns(counts: tuple[int, ...]) -> int:
+        total = sum(counts)
+        if not total:
+            return 0
+        if counts in patterns:
+            return 1
+        pivot = next(i for i, n in enumerate(counts) if n)
+        options = [(size, used) for size, used in covering[pivot]
+                   if all(counts[i] >= n for i, n in used)]
+        best = total
+        for _, used in options:
+            rest = list(counts)
+            for i, n in used:
+                rest[i] -= n
+            best = min(best, 1 + turns(tuple(rest)))
+            if best == 2:  # A one-meld hand was already handled above.
+                break
+        return best
+
+    return turns
 
 
-def _play_score(state: dict, player: str, move: dict, *, following: bool, urgent: bool) -> float:
-    left = _move_cards_left(state, player, move)
-    rank = move.get("rank", 0)
-    size = len(move.get("cards") or [])
-    move_type = move.get("type")
-    hand_count = len(state["hands"].get(player, []))
-
-    score = 0.0
-    score += size * 18
-    score -= left * 9
-    score -= rank * (0.8 if following else 0.45)
-    score += _move_priority(move) * (2.2 if not following else 0.7)
-
-    if left == 0:
-        score += 10000
-    elif left <= 2:
-        score += 360
-    elif left <= 4:
-        score += 170
-
-    if move_type in ("straight", "pair_straight", "airplane", "airplane_single", "airplane_pair"):
-        score += 70 + size * 2
-    if move_type in ("triple_single", "triple_pair"):
-        score += 32
-
-    if _is_bomb_move(move):
-        score -= 420
-        if urgent:
-            score += 720
-        if hand_count <= 5:
-            score += 260
-        if left <= 2:
-            score += 350
-    elif urgent and following:
-        score += 120
-
-    if following and rank >= RANK_VALUE["2"] and not urgent:
-        score -= 110
-    if not following and move_type == "single" and hand_count > 10:
-        score += 34
-    if not following and move_type == "pair" and hand_count > 8:
-        score += 18
-    return score
+def _unseen_rank_counts(state: dict, player: str) -> Counter:
+    # Only own cards and public discards. Never inspect another player's ranks.
+    seen = state["hands"][player] + state.get("played_cards", [])
+    return _counts(_new_deck()) - _counts(seen)
 
 
 def _strategic_play_decision(state: dict, player: str, moves: list[dict]) -> dict:
     playable = [m for m in moves if m.get("action") == "play"]
-    pass_move = next((m for m in moves if m.get("action") == "pass"), None)
+    passed = {"action": "pass", "cards": [], "moveId": "pass", "speech": "这手我先不要。"}
     if not playable:
-        return {"action": "pass", "cards": [], "moveId": "pass", "speech": "这手我先不要。", "force": False}
+        return passed
+    for move in playable:
+        if _move_cards_left(state, player, move) == 0:
+            return {**move, "speech": "这手能收就不拖了。"}
 
-    last = state.get("last_play")
-    landlord = state.get("landlord")
-    player_count = len(state["hands"].get(player, []))
+    hand = state["hands"][player]
+    original = _counts(hand)
+    turns = _hand_turn_counter(hand)
+    unseen = _unseen_rank_counts(state, player)
+    opponents = _opponents(state, player)
+    opponent_count = _min_count(state, opponents)
+    threats = {len(state["hands"].get(p, [])) for p in opponents} & {1, 2}
     teammate = next((p for p in PLAYERS if p != player and _is_teammate(state, player, p)), None)
     teammate_count = len(state["hands"].get(teammate, [])) if teammate else 99
-    opponent_count = _min_count(state, _opponents(state, player))
-    danger = opponent_count <= 3
-    warning = opponent_count <= 5
+    last = state.get("last_play")
+    following = bool(last and last.get("player") != player)
 
-    winner = max((m for m in playable if _move_cards_left(state, player, m) == 0), default=None, key=lambda m: _play_score(state, player, m, following=bool(last), urgent=True))
-    if winner:
-        return {**winner, "speech": "这手能收就不拖了。", "force": True}
+    def score(move):
+        used = _counts(move["cards"])
+        rest = original - used
+        value = -140 * turns(tuple(rest[r] for r in RANKS)) - sum(rest.values()) * 2
+        value -= move.get("rank", 0) * (1.5 if following else 0.5)
+        for rank, count in rest.items():
+            if count == 1:
+                value -= max(0, RANK_VALUE["A"] - RANK_VALUE[rank]) * 1.5
+        for rank, count in used.items():
+            if original[rank] == 4 and count < 4:
+                value -= 180
+            elif original[rank] in (2, 3) and count < original[rank]:
+                value -= 18
+            if RANK_VALUE[rank] >= RANK_VALUE["2"]:
+                value -= count * 24
+        if original["BJ"] and original["RJ"] and bool(used["BJ"]) != bool(used["RJ"]):
+            value -= 180
+        if _is_bomb_move(move):
+            value -= 100
+        return value
 
-    if last and last.get("player") != player:
-        last_player = last.get("player")
-        last_count = len(state["hands"].get(last_player, []))
-        following_teammate = _is_teammate(state, player, last_player)
-        urgent = last_count <= 2 or (last_player == landlord and last_count <= 5)
-        best_play = max(playable, key=lambda m: _play_score(state, player, m, following=True, urgent=urgent or danger))
-        best_non_bomb = max((m for m in playable if not _is_bomb_move(m)), default=None, key=lambda m: _play_score(state, player, m, following=True, urgent=urgent or danger))
+    def best(options):
+        return max(options, key=score)
 
-        if following_teammate:
-            landlord_acts_next = _next_player(state, player) == landlord
-            teammate_is_runner = last_count < player_count
-            if teammate_is_runner and not landlord_acts_next and not danger:
-                return {"action": "pass", "cards": [], "moveId": "pass", "speech": "让你走，我不挡路。", "force": False}
-            if landlord_acts_next and last_count > 2:
-                small_blocks = [
-                    m for m in playable
-                    if not _is_bomb_move(m) and m.get("rank", 99) < RANK_VALUE["A"] and len(m.get("cards") or []) == len(last.get("cards") or [])
-                ]
-                if small_blocks:
-                    chosen = max(small_blocks, key=lambda m: _play_score(state, player, m, following=True, urgent=False))
-                    return {**chosen, "speech": "我再垫一下，不让地主舒服接回去。", "force": False}
-            return {"action": "pass", "cards": [], "moveId": "pass", "speech": "这手给队友过。", "force": False}
+    def highest_block(options):
+        normal = [m for m in options if not _is_bomb_move(m)]
+        # On a reported single/pair, use the highest same-type block available.
+        return max(normal, key=lambda m: (m.get("rank", 0), score(m))) if normal else best(options)
 
-        if _is_teammate(state, player, last_player) and not urgent:
-            return {"action": "pass", "cards": [], "moveId": "pass", "speech": "队友这手我先让。", "force": False}
+    max_opponent_count = max((len(state["hands"].get(p, [])) for p in opponents), default=0)
+    for bomb in (m for m in playable if _is_bomb_move(m)):
+        rest = [c for c in hand if c not in bomb["cards"]]
+        if not classify_cards(rest):
+            continue
+        rocket_possible = max_opponent_count >= 2 and unseen["BJ"] and unseen["RJ"]
+        higher_bomb_possible = max_opponent_count >= 4 and any(
+            n == 4 and RANK_VALUE[r] > bomb["rank"] for r, n in unseen.items()
+        )
+        if bomb["type"] == "rocket" or not (rocket_possible or higher_bomb_possible):
+            return {**bomb, "speech": "先拿回出牌权，下一手收尾。"}
 
-        if urgent or danger:
-            return {**best_play, "speech": "这手必须拦住。", "force": True}
-        if pass_move and (not best_non_bomb or best_play.get("rank", 0) >= RANK_VALUE["2"] or _is_bomb_move(best_play)):
-            return {"action": "pass", "cards": [], "moveId": "pass", "speech": "这手先放一放。", "force": False}
-        chosen = best_non_bomb or best_play
-        return {**chosen, "speech": "压一手，把节奏拿回来。", "force": False}
+    if following:
+        if _is_teammate(state, player, last["player"]):
+            landlord_next = _next_player(state, player) == state.get("landlord")
+            matching_threat = last.get("length") in threats and last.get("type") in ("single", "pair")
+            bigger_unseen = any(n >= last.get("length", 1) and RANK_VALUE[r] > last["rank"]
+                                for r, n in unseen.items())
+            if landlord_next and matching_threat and bigger_unseen:
+                return {**highest_block(playable), "speech": "我来挡一下，别让地主收尾。"}
+            return {**passed, "speech": "这手给队友过。"}
 
-    lead_moves = [m for m in playable if not _is_bomb_move(m)] or playable
-    if player != landlord and teammate and teammate_count < player_count and teammate_count <= 5:
-        single_or_pair = [m for m in lead_moves if m.get("type") in ("single", "pair") and m.get("rank", 0) < RANK_VALUE["A"]]
-        if single_or_pair:
-            chosen = min(single_or_pair, key=lambda m: (m.get("rank", 0), len(m.get("cards") or [])))
-            return {**chosen, "speech": "我先递个小口，给队友接。", "force": False}
+        urgent = opponent_count <= 2
+        if urgent and last.get("type") in ("single", "pair") and last.get("length") in threats:
+            return {**highest_block(playable), "speech": "这手得拦住。"}
+        normal = [m for m in playable if not _is_bomb_move(m)]
+        if not normal and not urgent:
+            return passed
+        chosen = best(normal or playable)
+        remaining = original - _counts(chosen["cards"])
+        if (not urgent and chosen.get("rank", 0) >= RANK_VALUE["2"]
+                and turns(tuple(remaining[r] for r in RANKS)) > 1):
+            return passed
+        return {**chosen, "speech": "压一手，把节奏拿回来。"}
 
-    if warning:
-        chosen = max(lead_moves, key=lambda m: _play_score(state, player, m, following=False, urgent=True))
-        return {**chosen, "speech": "先抢节奏，不能让你们轻松收尾。", "force": True}
+    if threats:
+        controls = [m for m in playable if m.get("type") in ("single", "pair")
+                    and len(m["cards"]) in threats
+                    and not any(n >= len(m["cards"]) and RANK_VALUE[r] > m["rank"]
+                                for r, n in unseen.items())]
+        if controls:
+            return {**best(controls), "speech": "先用大牌把收尾封住。"}
+        # Avoid leading the exact number of cards an opponent could finish with.
+        safe = [m for m in playable if len(m["cards"]) not in threats]
+        chosen = best(safe) if safe else highest_block(playable)
+        return {**chosen, "speech": "先封住你们的收尾。"}
 
-    chosen = max(lead_moves, key=lambda m: _play_score(state, player, m, following=False, urgent=False))
-    return {**chosen, "speech": "先把牌型顺出去。", "force": False}
+    if teammate and teammate_count <= 2 and _next_player(state, player) == teammate:
+        wanted = "single" if teammate_count == 1 else "pair"
+        feeds = [m for m in playable if m.get("type") == wanted and m.get("rank", 99) < RANK_VALUE["A"]]
+        if feeds:
+            # Prefer an intact group; do not dismantle a bomb just to feed a low card.
+            intact = [m for m in feeds if original[_card_rank(m["cards"][0])] == len(m["cards"])]
+            if intact:
+                chosen = min(intact, key=lambda m: m["rank"])
+                return {**chosen, "speech": "递个小口，给队友接。"}
+
+    return {**best(playable), "speech": "先把牌型顺出去。"}
 
 
 def _append_history(state: dict, player: str, event: str, speech: str = "", cards: Optional[list[str]] = None, bid: Optional[int] = None):
@@ -788,7 +829,7 @@ async def _trigger_group_replies(room_id: str):
         pass
 
 
-def _game_prompt(state: dict, player: str, moves: Optional[list[dict]] = None) -> str:
+def _game_prompt(state: dict, player: str, moves: Optional[list[dict]] = None, chosen_move: Optional[dict] = None) -> str:
     public = _public_state(state, for_player=player)
     private = {
         "you": player,
@@ -804,20 +845,16 @@ def _game_prompt(state: dict, player: str, moves: Optional[list[dict]] = None) -
             "speech": "一句符合你人设的牌桌发言，最多 40 个中文字符",
         }
     else:
-        recommended = _strategic_play_decision(state, player, moves or [])
-        private["legalMoves"] = moves or []
+        recommended = chosen_move or _strategic_play_decision(state, player, moves or [])
         private["recommendedMove"] = {
             "moveId": recommended.get("id") or recommended.get("moveId"),
             "action": recommended.get("action"),
             "cards": recommended.get("cards", []),
             "label": recommended.get("label", "不出"),
-            "reason": "服务端按斗地主评分策略给出的推荐：优先走完；对手剩 3-5 张时进入阻截；农民根据队友剩牌决定让路或突围；地主下一手行动时农民要适当抬高小牌；炸弹/王炸只在残局、阻截或能赢时使用。",
+            "reason": recommended.get("speech", ""),
         }
         schema = {
-            "action": "play 或 pass",
-            "moveId": "优先填写 legalMoves 里的 id；pass 时可为 pass",
-            "cards": "要出的牌，必须与 moveId 对应；pass 时为空数组",
-            "speech": "一句符合你人设的牌桌发言，最多 40 个中文字符",
+            "speech": "针对 recommendedMove 已确定的出牌或不出，说一句符合你人设的牌桌发言，最多 40 个中文字符",
         }
 
     return (
@@ -825,7 +862,7 @@ def _game_prompt(state: dict, player: str, moves: Optional[list[dict]] = None) -
         f"你正在和 {_player_name('user')}、{_player_name('aion')}、{_player_name('connor')} 玩一局真实斗地主。你必须保持原本人设和说话风格，但本次回复只允许输出一个 JSON 对象。\n"
         "不要输出 Markdown，不要解释，不要把 JSON 包在代码块里，不要泄露思考过程。禁止调用任何工具，直接回复。\n"
         "服务端会校验你的动作；你不知道其他玩家未出的手牌，只能根据自己的手牌和公共信息判断。\n\n"
-        "出牌时请优先参考 recommendedMove。重点：残局要阻截，农民要配合强势队友，但不要把回合轻易还给地主；炸弹/王炸是关键资源，只在阻截、残局或能赢时使用。\n\n"
+        "出牌回合的动作已由本地策略确定为 recommendedMove，不能更改；你负责保持人设、接续聊天，并说出与该动作一致的台词。叫分回合仍由你根据自己的牌决定。\n\n"
         f"【必须符合的 JSON schema】\n{json.dumps(schema, ensure_ascii=False)}\n\n"
         f"【你的私有牌局信息】\n{json.dumps(private, ensure_ascii=False)}"
     )
@@ -868,7 +905,7 @@ async def _collect_ai_text(messages: list[dict], player: str, model: str) -> str
     return text
 
 
-async def _ask_ai(state: dict, player: str, moves: Optional[list[dict]] = None) -> dict:
+async def _ask_ai(state: dict, player: str, moves: Optional[list[dict]] = None, chosen_move: Optional[dict] = None) -> dict:
     room_id, room, msgs = await _latest_group_context()
     query = "斗地主牌局 JSON 决策"
     if player == "aion":
@@ -879,7 +916,7 @@ async def _ask_ai(state: dict, player: str, moves: Optional[list[dict]] = None) 
         messages, _ = await build_connor_group_context(
             room_id, msgs, room.get("context_minutes", 30), query,
         )
-    messages.append({"role": "user", "content": _game_prompt(state, player, moves)})
+    messages.append({"role": "user", "content": _game_prompt(state, player, moves, chosen_move)})
 
     raw = await _collect_ai_text(messages, player, state.get("model") or DEFAULT_MODEL)
     try:
@@ -903,14 +940,6 @@ def _fallback_bid(state: dict, player: str) -> dict:
     return {"action": "bid", "bid": bid, "speech": "我按牌面稳一点来。"}
 
 
-def _fallback_play(moves: list[dict]) -> dict:
-    playable = [m for m in moves if m["action"] == "play"]
-    if not playable:
-        return {"action": "pass", "cards": [], "speech": "这手我先不要。"}
-    chosen = playable[0]
-    return {"action": "play", "moveId": chosen["id"], "cards": chosen["cards"], "speech": "我先走这手。"}
-
-
 async def _run_ai_step(state: dict) -> dict:
     player = state.get("current_player")
     if player not in ("aion", "connor"):
@@ -928,28 +957,11 @@ async def _run_ai_step(state: dict) -> dict:
     moves = legal_moves(state, player)
     strategic = _strategic_play_decision(state, player, moves)
     try:
-        decision = await asyncio.wait_for(_ask_ai(state, player, moves), timeout=AI_TIMEOUT_SECONDS)
+        dialogue = await asyncio.wait_for(_ask_ai(state, player, moves, strategic), timeout=AI_TIMEOUT_SECONDS)
     except Exception:
-        decision = strategic or _fallback_play(moves)
-
-    move_id = str(decision.get("moveId") or "")
-    if move_id:
-        match = next((m for m in moves if m["id"] == move_id), None)
-        if match:
-            decision["action"] = match["action"]
-            decision["cards"] = match["cards"]
-    if strategic.get("force"):
-        decision = {**strategic, "speech": str(decision.get("speech") or strategic.get("speech") or "")}
-    if decision.get("action") == "pass":
-        apply_play(state, player, "pass", [], str(decision.get("speech", "")))
-    else:
-        cards = [str(c) for c in decision.get("cards", [])]
-        try:
-            apply_play(state, player, "play", cards, str(decision.get("speech", "")))
-        except Exception:
-            fallback = _fallback_play(moves)
-            decision = fallback
-            apply_play(state, player, fallback["action"], fallback["cards"], fallback["speech"])
+        dialogue = {}
+    decision = {**strategic, "speech": str(dialogue.get("speech") or strategic.get("speech") or "")[:160]}
+    apply_play(state, player, decision["action"], decision["cards"], decision["speech"])
     return decision
 
 

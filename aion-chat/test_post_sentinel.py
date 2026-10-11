@@ -47,7 +47,7 @@ class PostSentinelTests(unittest.IsolatedAsyncioTestCase):
         }}
 
     def analysis(self, content='喜欢温柔的提醒', source='U1'):
-        return {'updates': [{'key': 'communication.reminders', 'category': 'companionship',
+        return {'updates': [{'key': 'communication.reminders', 'category': 'recent', 'reason': '近期变化有后续价值',
                              'content': content, 'sources': [source]}], 'state': None}
 
     async def test_profile_subject_uses_configured_name_for_facts_and_activity(self):
@@ -56,7 +56,7 @@ class PostSentinelTests(unittest.IsolatedAsyncioTestCase):
                 prompt = self.service._analysis_prompt({'entries': {}, 'current_state': None}, [], {}, '')
                 self.assertIn(f'本人姓名为“{name}”', prompt)
                 document = {'entries': {}, 'current_state': None}
-                response = {'updates': [{'category': 'profile', 'content': '用户喜欢自然聊天',
+                response = {'updates': [{'category': 'recent', 'reason': '近期变化有后续价值', 'content': '用户喜欢自然聊天',
                                          'topic': '用户的交流偏好', 'sources': ['U1']}],
                             'state': {'text': '用户正在洗菜', 'phase': 'ongoing', 'sources': ['U1']}}
                 self.service._apply_analysis(document, response, {'U1': 'private:one'}, {'source_ts': time.time()})
@@ -80,6 +80,89 @@ class PostSentinelTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(document['entries']['manual'][key], entry[key])
         for key in state.keys() - {'text'}:
             self.assertEqual(document['current_state'][key], state[key])
+
+    async def test_new_incidental_records_need_reason_and_completed_events_are_skipped(self):
+        document = {'entries': {}, 'current_state': None}
+        parsed = {'updates': [
+            {'category': 'recent', 'topic': '晚餐', 'kind': 'task', 'content': '已吃完晚餐', 'sources': ['U1']},
+            {'category': 'recent', 'topic': '遛狗', 'kind': 'task', 'status': 'done',
+             'content': '已遛狗回来', 'sources': ['U1']},
+            {'category': 'recent', 'topic': '取药', 'kind': 'task', 'content': '明天去医院取药',
+             'reason': '尚未完成且有明确安排，需要后续记住', 'sources': ['U1']},
+            {'category': 'recent', 'reason': '近期变化有后续价值', 'topic': '角色喜好', 'content': '喜欢人外角色', 'sources': ['U1']},
+        ], 'state': None}
+        self.service._apply_analysis(document, parsed, {'U1': 'private:one'}, {'source_ts': time.time()})
+        values = list(document['entries'].values())
+        self.assertEqual(len(values), 2)
+        self.assertEqual({e['category'] for e in values}, {'recent'})
+        self.assertTrue(document['_analysis_errors'])
+
+    async def test_finished_activity_updates_state_without_creating_a_fact(self):
+        now = time.time()
+        document = {'entries': {}, 'current_state': {'text': '正在遛狗', 'phase': 'ongoing',
+                    'event_at': now-100, 'expires_at': now+600}}
+        response = {'updates': [], 'state': {'text': '遛狗结束，已回家', 'phase': 'finished',
+                    'sources': ['U1']}}
+        self.service._apply_analysis(document, response, {'U1': 'private:one'}, {'source_ts': now})
+        from user_profile_policy import render_context
+        self.assertEqual(document['entries'], {})
+        self.assertEqual(document['current_state']['phase'], 'finished')
+        self.assertEqual(render_context(document, now=now)[0], '')
+
+    async def test_activity_accepts_content_alias_and_optional_fields(self):
+        now = time.time()
+        for state in (
+            {'content': '准备去睡觉', 'phase': '进行中', 'sources': 'U1', 'ttl_minutes': None},
+            {'text': '准备去睡觉', 'phase': 'ONGOING', 'sources': ['private:one']},
+            {'content': '准备去睡觉', 'sources': ['U1'], 'ttl_minutes': 'bad'},
+        ):
+            with self.subTest(state=state):
+                document = {'entries': {}, 'current_state': None}
+                self.assertTrue(self.service._apply_analysis(
+                    document, {'current_state': state}, {'U1': 'private:one'},
+                    {'source_id': 'private:one', 'source_ts': now}))
+                self.assertEqual(document['_analysis_errors'], [])
+                self.assertEqual(document['current_state']['text'], '准备去睡觉')
+                self.assertEqual(document['current_state']['sources'], ['private:one'])
+                self.assertEqual(document['current_state']['expires_at'], now + 3600)
+        self.assertEqual(document['current_state']['phase'], 'unknown')
+
+    async def test_single_update_accepts_text_and_null_optional_metadata(self):
+        document = {'entries': {}, 'current_state': None}
+        response = {'updates': {'text': '明天去取药', 'kind': 'task', 'topic': None,
+                               'reason': '明确的未完成安排', 'sources': 'U1',
+                               'importance': None, 'certainty': None, 'keywords': None,
+                               'next_step': None, 'status': None}}
+        self.assertTrue(self.service._apply_analysis(
+            document, response, {'U1': 'private:one'}, {'source_ts': time.time()}))
+        self.assertEqual(document['_analysis_errors'], [])
+        entry = next(iter(document['entries'].values()))
+        self.assertEqual(entry['content'], '明天去取药')
+        self.assertEqual(entry['kind'], 'task')
+        self.assertEqual(entry['status'], 'active')
+
+    async def test_activity_accepts_sentence_over_old_limit_without_truncation(self):
+        text = '准备整理项目文档，' * 9 + '整理完以后再休息。'
+        document = {'entries': {}, 'current_state': None}
+        self.assertTrue(self.service._apply_analysis(
+            document, {'updates': None, 'state': {'text': text, 'phase': 'planned', 'sources': ['U1']}},
+            {'U1': 'private:one'}, {'source_ts': time.time()}))
+        self.assertEqual(document['current_state']['text'], text)
+        self.assertEqual(document['_analysis_errors'], [])
+        from routes.user_profile import CurrentState
+        state = CurrentState(text=text, phase='planned', expires_at=time.time() + 3600)
+        saved = await self.service.save_manual({'entries': [], 'current_state': state.model_dump()}, 0)
+        self.assertEqual(saved['current_state']['text'], text)
+
+    async def test_compatibility_never_invents_sources_or_accepts_unknown_phase(self):
+        for state in ({'content': '准备睡觉', 'phase': 'ongoing'},
+                      {'content': '准备睡觉', 'phase': 'made-up', 'sources': 'U1'}):
+            with self.subTest(state=state):
+                document = {'entries': {}, 'current_state': None}
+                self.service._apply_analysis(document, {'updates': [], 'state': state},
+                                             {'U1': 'private:one'}, {'source_ts': time.time()})
+                self.assertIsNone(document['current_state'])
+                self.assertTrue(document['_analysis_errors'])
 
     async def test_deduplicates_user_events_and_ignores_ai_and_system_messages(self):
         event = await self.message()
@@ -109,7 +192,7 @@ class PostSentinelTests(unittest.IsolatedAsyncioTestCase):
         async def during_call(prompt):
             data = await self.service.snapshot()
             await self.service.save_manual({'entries': [{
-                'key': 'communication.reminders', 'category': 'companionship',
+                'key': 'communication.reminders', 'category': 'recent', 'reason': '近期变化有后续价值',
                 'content': '我自己写的提醒偏好', 'locked': True,
             }], 'current_state': None}, data['revision'])
             return self.analysis()
@@ -175,7 +258,7 @@ class PostSentinelTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_manual_revision_and_deleted_key_protection(self):
         data = await self.service.snapshot()
-        content = {'entries': [{'key': 'food.preference', 'category': 'preferences',
+        content = {'entries': [{'key': 'food.preference', 'category': 'recent', 'reason': '近期变化有后续价值',
                                'content': '喜欢清淡', 'locked': True}], 'current_state': None}
         await self.service.save_manual(content, data['revision'])
         with self.assertRaises(ValueError):
@@ -183,7 +266,7 @@ class PostSentinelTests(unittest.IsolatedAsyncioTestCase):
         data = await self.service.snapshot()
         await self.service.save_manual({'entries': [], 'current_state': None}, data['revision'])
         await self.service.enqueue_event(await self.message())
-        response = {'updates': [{'key': 'food.preference', 'category': 'preferences',
+        response = {'updates': [{'key': 'food.preference', 'category': 'recent', 'reason': '近期变化有后续价值',
                                  'content': '喜欢重口味', 'sources': ['U1']}], 'state': None}
         with patch.object(self.service, '_call_model', AsyncMock(return_value=response)):
             await self.service.run_pending_once()
@@ -198,7 +281,7 @@ class PostSentinelTests(unittest.IsolatedAsyncioTestCase):
         async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test') as client:
             data = (await client.get('/api/user-profile')).json()
             body = {'revision': data['revision'], 'entries': [{
-                'key': 'preferences.food', 'category': 'preferences', 'content': '手写偏好', 'locked': True,
+                'key': 'preferences.food', 'category': 'recent', 'reason': '近期变化有后续价值', 'content': '手写偏好', 'locked': True,
             }], 'current_state': None}
             self.assertEqual((await client.put('/api/user-profile', json=body)).status_code, 200)
             self.assertEqual((await client.put('/api/user-profile', json=body)).status_code, 409)
@@ -219,6 +302,22 @@ class PostSentinelTests(unittest.IsolatedAsyncioTestCase):
         }), patch.object(memory, '_call_sentinel_text', AsyncMock(return_value='{"updates":[],"state":null}')) as call:
             self.assertEqual(await self.service._call_model('test'), {'updates': [], 'state': None})
         self.assertEqual(call.await_args.args[0]['model'], 'configured-luna')
+
+    async def test_fenced_model_reply_with_content_alias_is_persisted(self):
+        import memory
+        await self.service.enqueue_event(await self.message(text='准备去睡觉'))
+        raw = '整理好了：\n```json\n' + json.dumps({
+            'state': {'content': '准备去睡觉', 'phase': 'ONGOING', 'sources': 'U1'}
+        }, ensure_ascii=False) + '\n```'
+        with patch.object(self.service, 'get_sentinel_config', return_value={
+            'ready': True, 'model': 'fixture'
+        }), patch.object(memory, '_call_sentinel_text', AsyncMock(return_value=raw)):
+            await self.service.run_pending_once()
+        data = await self.service.snapshot()
+        self.assertEqual(data['current_state']['text'], '准备去睡觉')
+        self.assertEqual(data['pending'], 0)
+        self.assertEqual(data['failed'], 0)
+        self.assertEqual(data['last_error'], '')
 
     async def test_background_luna_does_not_wait_for_busy_chat_slots(self):
         import ai_providers
@@ -295,14 +394,13 @@ class PostSentinelTests(unittest.IsolatedAsyncioTestCase):
     async def test_valid_pickup_survives_invalid_state_and_partial_retry(self):
         await self.service.enqueue_event(await self.message(text='明天十点半之后取药'))
         response = {'updates': [{'category': 'recent', 'topic': '取药', 'kind': 'task',
-                                'content': '明天10:30之后取药，尚未完成', 'sources': ['U1']}],
-                    'state': {'text': '计划明天取药', 'phase': 'planned',
-                              'ttl_minutes': 'bad', 'sources': ['U1']}}
+                                'content': '明天10:30之后取药，尚未完成', 'reason': '明确的未完成取药安排', 'sources': ['U1']}],
+                    'state': {'text': '', 'phase': 'planned', 'sources': ['U1']}}
         with patch.object(self.service, '_call_model', AsyncMock(return_value=response)):
             await self.service.run_pending_once()
         data = await self.service.snapshot()
         self.assertEqual(len(data['entries']), 1)
-        self.assertIn('有效期', data['last_error'])
+        self.assertIn('内容', data['last_error'])
         self.assertEqual(data['pending'], 1)
         self.assertIn('尚未完成', await self.service.build_context(now=time.time() + 45*86400))
 
@@ -311,7 +409,7 @@ class PostSentinelTests(unittest.IsolatedAsyncioTestCase):
         await self.service.enqueue_event(await self.message(text='准备去医院取药'))
         response = {'updates': [{'category': 'recent', 'topic': '取药', 'kind': 'task',
                                 'content': '准备去医院取药', 'available_at': available,
-                                'sources': ['U1']}], 'state': None}
+                                'reason': '明确的未完成取药安排', 'sources': ['U1']}], 'state': None}
         with patch.object(self.service, '_call_model', AsyncMock(return_value=response)):
             await self.service.run_pending_once()
         await self.service.enqueue_event(await self.message('two', text='先吃早饭，晚点再出门'))
@@ -330,39 +428,17 @@ class PostSentinelTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data['entries'][0]['status'], 'done')
         self.assertNotIn('取药', await self.service.build_context())
 
-    async def test_prompt_budget_and_project_decay_without_losing_tasks(self):
-        now = time.time()
-        values = {
-            'old': {'key': 'old', 'category': 'recent', 'kind': 'project', 'topic': '临时项目',
-                    'content': '曾考虑做一个小游戏', 'source_ts': now-31*86400},
-            'task': {'key': 'task', 'category': 'recent', 'kind': 'task', 'topic': '医院',
-                     'content': '需要去医院取药，结果尚未确认', 'due_at': now-86400, 'source_ts': now-31*86400},
-        }
-        for n in range(15):
-            values[f'p{n}'] = {'key': f'p{n}', 'category': 'profile', 'content': '偏好内容' * 45,
-                              'source_ts': now, 'locked': n == 0}
-        async with self.connect() as db:
-            await db.execute('UPDATE post_sentinel_document SET payload=?',
-                             (json.dumps({'version': 2, 'entries': values, 'current_state': None}),))
-            await db.commit()
-        context = await self.service.build_context(now=now)
-        self.assertLessEqual(len(context), 1200)
-        self.assertNotIn('小游戏', context)
-        self.assertIn('取药', context)
-        self.assertIn('结果未确认', context)
-        self.assertEqual(len((await self.service.snapshot())['entries']), 17)
-
-    async def test_earlier_user_evidence_can_be_backfilled_without_refreshing_age(self):
+    async def test_background_only_fact_cannot_be_extracted_from_unrelated_latest_message(self):
         old_time = time.time()-3600
         await self.message('earlier', text='我喜欢安静', ts=old_time)
         await self.service.enqueue_event(await self.message(text='今天在看电影'))
-        response = {'updates': [{'category': 'profile', 'topic': '交流', 'content': '喜欢安静',
+        response = {'updates': [{'category': 'recent', 'reason': '近期变化有后续价值', 'topic': '交流', 'content': '喜欢安静',
                                 'sources': ['U1']}], 'state': None}
         with patch.object(self.service, '_call_model', AsyncMock(return_value=response)):
             await self.service.run_pending_once()
         data = await self.service.snapshot()
-        self.assertEqual(data['entries'][0]['source_ts'], old_time)
-        self.assertEqual(data['last_error'], '')
+        self.assertEqual(data['entries'], [])
+        self.assertIn('当前用户消息', data['last_error'])
 
     async def test_failed_job_retries_with_exact_error_and_recovers(self):
         await self.service.enqueue_event(await self.message())
@@ -378,31 +454,6 @@ class PostSentinelTests(unittest.IsolatedAsyncioTestCase):
             await self.service.run_pending_once()
         self.assertEqual((await self.service.snapshot())['pending'], 0)
         self.assertEqual((await self.service.snapshot())['last_error'], '')
-
-    async def test_migration_backs_up_once_and_preserves_manual_and_age(self):
-        old = {'entries': {'pref': {'key': 'pref', 'category': 'preferences', 'content': '手动内容',
-                                   'locked': True, 'source_ts': 123, 'sources': ['manual']},
-                           'removed': {'key': 'removed', 'category': 'preferences', 'content': '已删内容',
-                                       'locked': True, 'deleted': True, 'source_ts': 122}},
-               'current_state': {'text': '手动状态', 'phase': 'ongoing', 'locked': True,
-                                 'event_at': 234.567, 'expires_at': 1234.567}}
-        async with self.connect() as db:
-            await db.execute('UPDATE post_sentinel_document SET payload=?', (json.dumps(old),))
-            await db.commit()
-        await self.service.ensure_schema()
-        await self.service.ensure_schema()
-        data = await self.service.snapshot()
-        self.assertEqual(data['entries'][0]['category'], 'profile')
-        self.assertEqual(data['entries'][0]['source_ts'], 123)
-        self.assertFalse(data['entries'][0]['locked'])
-        self.assertFalse(data['current_state']['locked'])
-        self.assertEqual(data['current_state']['event_at'], 234.567)
-        async with self.connect() as db:
-            count = (await (await db.execute('SELECT count(*) FROM post_sentinel_backups')).fetchone())[0]
-            payload = json.loads((await (await db.execute('SELECT payload FROM post_sentinel_document')).fetchone())[0])
-        self.assertTrue(payload['entries']['removed']['deleted'])
-        self.assertTrue(payload['entries']['removed']['locked'])
-        self.assertEqual(count, 1)
 
     async def test_consolidation_cannot_retire_or_merge_away_unfinished_task(self):
         import copy
@@ -421,7 +472,7 @@ class PostSentinelTests(unittest.IsolatedAsyncioTestCase):
     async def test_two_independent_tasks_can_share_topic_without_overwrite(self):
         await self.service.enqueue_event(await self.message(text='明天取自己的药'))
         response = {'updates': [{'category': 'recent', 'topic': '取药', 'kind': 'task',
-                                'content': '明天取自己的药', 'sources': ['U1']}], 'state': None}
+                                'content': '明天取自己的药', 'reason': '明确的未完成取药安排', 'sources': ['U1']}], 'state': None}
         with patch.object(self.service, '_call_model', AsyncMock(return_value=response)):
             await self.service.run_pending_once()
         data = await self.service.snapshot()
@@ -432,41 +483,13 @@ class PostSentinelTests(unittest.IsolatedAsyncioTestCase):
             await self.service.run_pending_once()
         self.assertEqual(len((await self.service.snapshot())['entries']), 2)
 
-    async def test_stale_project_keeps_historical_label_until_retirement(self):
-        from user_profile_policy import render_context
-        now = time.time()
-        entry = {'key': 'project', 'category': 'recent', 'kind': 'project',
-                 'content': '准备做一个小游戏', 'source_ts': now-14*86400}
-        document = {'entries': {'project': entry}}
-        context = render_context(document, now=now)[0]
-        self.assertIn('小游戏', context)
-        self.assertIn('久未确认', context)
-        self.assertNotIn('小游戏', render_context(document, now=now+16*86400)[0])
-
-    async def test_new_model_label_and_explicit_duration_are_normalized(self):
-        now = time.time()
-        await self.service.enqueue_event(await self.message(text='我喜欢完整段落，接下来一周在做一个创作练习', ts=now))
-        response = {'updates': [
-            {'ref': 'P4', 'category': 'profile', 'topic': '交流', 'content': '喜欢完整段落', 'sources': ['U1']},
-            {'category': 'recent', 'kind': 'context', 'topic': '练习', 'duration_days': 7,
-             'content': '接下来一周做创作练习', 'sources': ['U1']},
-        ], 'state': None}
-        with patch.object(self.service, '_call_model', AsyncMock(return_value=response)):
-            await self.service.run_pending_once()
-        data = await self.service.snapshot()
-        self.assertEqual(data['last_error'], '')
-        self.assertEqual(len(data['entries']), 2)
-        self.assertIn('练习', await self.service.build_context(now=now+4*86400))
-        self.assertNotIn('练习', await self.service.build_context(now=now+8*86400))
-        self.assertIn('完整段落', await self.service.build_context(now=now+8*86400))
-
     async def test_api_unrelated_edit_preserves_task_times_and_confirmation(self):
         from fastapi import FastAPI
         from httpx import ASGITransport, AsyncClient
         from routes.user_profile import router
         now = time.time()
         data = await self.service.save_manual({'entries': [
-            {'key': 'manual.preference', 'category': 'profile', 'content': '完整段落', 'locked': True},
+            {'key': 'manual.preference', 'category': 'recent', 'reason': '近期变化有后续价值', 'content': '完整段落', 'locked': True},
             {'key': 'manual.task', 'category': 'recent', 'kind': 'task', 'status': 'active',
              'content': '明天取药', 'available_at': now+86400, 'locked': False},
         ], 'current_state': None}, 0)
@@ -485,6 +508,48 @@ class PostSentinelTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(task['kind'], 'task')
         self.assertEqual(task['status'], 'active')
         self.assertFalse(task['locked'])
+
+    async def test_v4_migration_backs_up_and_never_resumes_history(self):
+        legacy = {'version':4,'entries':{'old':{'content':'旧长期画像'}},
+                  'initialization':{'source_ids':['private:old'],'cursor':1,'status':'pending'}}
+        async with self.connect() as db:
+            await db.execute('UPDATE post_sentinel_document SET payload=?', (json.dumps(legacy),))
+            await db.commit()
+        await self.service.ensure_schema()
+        await self.service.ensure_schema()
+        data = await self.service.snapshot()
+        self.assertEqual(data['version'], 5)
+        self.assertEqual(data['entries'], [])
+        self.assertFalse(data['needs_initialization'])
+        self.assertEqual(data['initialization'], {})
+        async with self.connect() as db:
+            backups = await (await db.execute("SELECT payload FROM post_sentinel_backups WHERE reason='profile-v4-before-v5'")).fetchall()
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(json.loads(backups[0][0]), legacy)
+
+    async def test_crashed_week_is_manual_resumable_without_auto_model_call(self):
+        async with self.connect() as db:
+            await db.execute('UPDATE post_sentinel_document SET payload=?', (json.dumps({
+                'version':5,'entries':{},'initialization':{'mode':'recent_week','status':'running','cursor':20}}),))
+            await db.commit()
+        import profile_initialize
+        with patch.object(profile_initialize, 'start', AsyncMock()) as init, patch.object(self.service, '_loop', AsyncMock()):
+            await self.service.start()
+            data = await self.service.snapshot()
+            self.assertEqual(data['initialization']['status'],'pending')
+            self.assertEqual(data['initialization']['cursor'],20)
+            init.assert_not_awaited()
+
+    async def test_simple_call_collects_usage_without_extra_call(self):
+        import ai_providers
+        async def stream(*args, **kwargs):
+            kwargs['meta'].update(prompt_tokens=123,completion_tokens=45)
+            yield '{}'
+        usage = {}
+        with patch.object(ai_providers, 'stream_ai', stream), patch.object(ai_providers, '_save_model_raw_response') as save:
+            self.assertEqual(await ai_providers.simple_ai_call([], 'Codex-5.6-Sol', usage=usage), '{}')
+        self.assertEqual(usage['prompt_tokens'],123)
+        self.assertEqual(save.call_args.kwargs['usage']['completion_tokens'],45)
 
 
 if __name__ == '__main__':

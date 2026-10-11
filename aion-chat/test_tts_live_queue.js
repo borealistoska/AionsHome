@@ -4,6 +4,37 @@ const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
 
+test('an abnormal reply suppresses late audio and stops its queued playback', () => {
+  for (const [file, name, orderName, suppressName, stopName] of [
+    ['chat.js', 'cancelTTSMessage', 'ttsPlayOrder', 'suppressTTSMsg', 'stopLiveTTSQueue'],
+    ['chatroom.js', 'crCancelTTSMessage', '_ttsEngine', 'crSuppressTTSMsg', 'crStopTTS'],
+  ]) {
+    const source = fs.readFileSync(path.join(__dirname, 'static', file), 'utf8');
+    const start = source.indexOf(`function ${name}(`);
+    const end = source.indexOf('\n}', start) + 2;
+    const suppressed = new Set();
+    let stops = 0;
+    const context = vm.createContext({
+      [orderName]: orderName === '_ttsEngine' ? { playOrder: ['bad'] } : ['bad'],
+      [suppressName]: id => suppressed.add(id),
+      [stopName]: () => { stops++; },
+    });
+    vm.runInContext(source.slice(start, end), context);
+    context[name]('unrelated');
+    assert.equal(stops, 0);
+    context[name]('bad');
+    assert.equal(stops, 1);
+    assert.ok(suppressed.has('bad'));
+    const pending = ['good', 'bad'];
+    context[orderName] = orderName === '_ttsEngine'
+      ? { playOrder: pending, chunkQueues: { bad: {} } } : pending;
+    context.ttsChunkQueues = { bad: {} };
+    context[name]('bad');
+    assert.equal(stops, 1, 'must not interrupt the other speaker');
+    assert.deepEqual(pending, ['good']);
+  }
+});
+
 test('phone TTS settings reach the background service even without a page socket', () => {
   for (const [file, name, state] of [
     ['chat.js', '_sendTTSState', {ws: null, ttsEnabled: true, ttsVoiceId: 'voice', ttsPlaybackActiveAt: 20, _clientId: 'private'}],
@@ -21,6 +52,21 @@ test('phone TTS settings reach the background service even without a page socket
     assert.equal(sent.length, 1, file);
     assert.equal(sent[0][0], true);
     assert.equal(sent[0][1], 'voice');
+  }
+});
+
+test('a late completion marker cannot re-enable cancelled message audio', () => {
+  for (const [file, name, blocked, client, acceptAfter] of [
+    ['chat.js', 'finishTTSForMsg', 'ttsSuppressedMsgIds', '_clientId', 'ttsAcceptAfter'],
+    ['chatroom.js', 'crFinishTTSForMsg', 'crSuppressedTTSMsgIds', 'crAmbientClientId', 'crTtsAcceptAfter'],
+  ]) {
+    const source = fs.readFileSync(path.join(__dirname, 'static', file), 'utf8');
+    const start = source.indexOf(`function ${name}(`);
+    const suppressed = new Set(['bad']);
+    const context = vm.createContext({ [blocked]: suppressed, [client]: 'phone', [acceptAfter]: 0 });
+    vm.runInContext(source.slice(start, source.indexOf('\n}', start) + 2), context);
+    context[name]('bad', 1, 'phone');
+    assert.ok(suppressed.has('bad'));
   }
 });
 

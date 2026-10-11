@@ -585,6 +585,7 @@ body[data-theme="dark"] .gsi-title { color: rgba(244,246,255,0.70); }
 <script>
 /* ── 应用注册表 ─────────────────────────────────── */
 const APPS = [
+  { id: 'qq-social', name: 'QQ 群聊', icon: '/public/qq-social.png', url: '/qq-social' },
   { id: 'chat',     name: '聊天',     icon: '/public/funIcon_0005_聊天.png',   url: '/chat',  dock: true },
   { id: 'chatroom', name: '聊天室', icon: '/public/funIcon_0020_聊天室.png', url: '/chatroom' ,  dock: true  },
   { id: 'memory',   name: '记忆库',   icon: '/public/funIcon_0006_日记本.png',  url: '/memory' ,  dock: true },
@@ -611,7 +612,6 @@ const APPS = [
   { id: 'activity', name: '活动日志',     icon: '/public/funIcon_0000_备忘录.png', url: '/activity-logs' },
   { id: 'family-dynamics', name: '家庭动态', icon: '/public/funIcon_0031_家庭动态.png', url: '/family-dynamics' },
   { id: 'health',   name: '健康',     icon: '/public/funIcon_0003_健康心.png', url: '/health' },
-  { id: 'hug', name: '抱抱', icon: '/public/funIcon_0029_爱的抱抱.png', url: '/hug' },
   { id: 'reading',  name: '陪伴阅读',     icon: '/public/funIcon_0016_陪伴阅读.png',   url: '/reading' },
   { id: 'gift', name: '爱的印记', icon: '/public/funIcon_0018_爱的印记.png', url: '/gift' },
   { id: 'fund', name: '奥罗斯财团', icon: '/public/funIcon_0019_奥罗斯财团.png', url: '/fund' },
@@ -760,7 +760,7 @@ function normalizeLayout(rawLayout) {
 
   appIds.forEach(id => {
     if (id in layout || !allowed.has(id)) return;
-    const cell = nextFreeCell(layout, highest + 1);
+    const cell = nextFreeCell(layout, id === 'qq-social' ? 0 : highest + 1);
     layout[id] = cell;
     used.add(cell);
     highest = Math.max(highest, cell);

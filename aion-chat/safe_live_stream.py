@@ -1,4 +1,4 @@
-"""Independent low-latency safety gate for explicitly enabled chat models."""
+"""Shared low-latency, permissive safety gate for daily chat models."""
 
 from __future__ import annotations
 
@@ -15,7 +15,9 @@ from stream_safety import StreamActivity, StreamSafetyResult
 SAFE_LIVE_QUARANTINE_CHARS = 16
 SAFE_LIVE_MAX_PENDING_COMMAND_CHARS = 512
 SAFE_LIVE_MAX_LONG_COMMAND_CHARS = 4_096
+# Control blocks (e.g. song lyrics) retain their existing separate budget.
 SAFE_LIVE_MAX_CHARS = 6_000
+SAFE_LIVE_MAX_VISIBLE_CHARS = 3_000
 SAFE_LIVE_TOTAL_TIMEOUT = 900.0
 SAFE_LIVE_IDLE_TIMEOUT = 300.0
 
@@ -34,10 +36,29 @@ _RAW_OPENAI_ENVELOPE = re.compile(
 _UNKNOWN_ANGLE_TAG = re.compile(r"(?is)<\s*/?\s*([a-z][a-z0-9_-]*)\b[^>]{0,160}>")
 _ALLOWED_CONTROL_TAGS = {"meta", "autonomy_state"}
 _PROVIDER_ERROR_MARKER = re.compile(
-    r"\[(?:CodexCLI|Gemini|自定义中转站)错误(?:[^\]]*)\]",
+    r"\[(?:CodexCLI|AntigravityCLI|Gemini|硅基流动|中转站|自定义中转站)?错误(?:[^\]]*)\]",
     re.IGNORECASE,
 )
 _BASE64_TOKEN = re.compile(r"(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{320,}={0,2}(?![A-Za-z0-9+/])")
+
+# Deliberately permissive: only long, exact loops with real vocabulary.
+# Laughter, emoji, and a few repeated sentences are normal conversation.
+_PARAGRAPH_LOOP = re.compile(r"(.{32,200}?)\1{5,}", re.DOTALL)
+_STOP_NOTICES = {
+    "length": "回复达到 3000 字符上限，已停止生成。",
+    "repetition": "检测到持续重复，已停止生成。",
+    "quality": "回复内容异常，已停止生成。",
+    "transport": "回复连接中断，可重试。",
+    "idle_timeout": "回复等待超时，可重试。",
+    "total_timeout": "回复生成超时，可重试。",
+}
+
+
+def _is_paragraph_loop(text: str) -> bool:
+    if len(text) < 800 or len(set(text)) < 12:
+        return False
+    return any(len(match[0]) >= 800 and len(set(match[1])) >= 12
+               for match in _PARAGRAPH_LOOP.finditer(text))
 
 _BRACKET_COMMAND_PREFIXES = tuple(value.upper() for value in (
     "[语音",
@@ -113,12 +134,15 @@ class SafeLiveStreamGuard:
             self._stop("transport")
             return ""
         remaining = SAFE_LIVE_MAX_CHARS - self._committed_chars
-        if len(candidate) > remaining:
-            self._stop("length")
-            return ""
+        over_limit = len(candidate) > remaining
+        candidate = candidate[:remaining]
         if _looks_unsafe_protocol(candidate):
             self._stop("quality")
             return ""
+        if over_limit:
+            self._committed_chars += len(candidate)
+            self._stop("length")
+            return candidate
         self._buffer = candidate
         release_chars = len(candidate) - SAFE_LIVE_QUARANTINE_CHARS
         last_angle_open = candidate.rfind("<")
@@ -317,7 +341,26 @@ async def consume_safe_live_stream(
     iterator = source.__aiter__()
     started_at = clock()
     raw_parts: list[str] = []
+    visible_history = ""
+    last_repeat_check = 0
     diagnostic_error: str | None = None
+
+    async def deliver_checked(text: str) -> None:
+        nonlocal visible_history, last_repeat_check
+        remaining = SAFE_LIVE_MAX_VISIBLE_CHARS - len(visible_history)
+        over_limit = len(text) > remaining
+        text = text[:remaining]
+        candidate = visible_history + text
+        # Check across provider chunk boundaries without delaying ordinary text.
+        if len(candidate) - last_repeat_check >= 64:
+            last_repeat_check = len(candidate)
+            if _is_paragraph_loop(candidate):
+                guard._stop("repetition")
+                return
+        visible_history = candidate
+        await _deliver(on_commit, text)
+        if over_limit:
+            guard._stop("length")
 
     while guard.stop_reason is None and command_filter.stop_reason is None:
         remaining = SAFE_LIVE_TOTAL_TIMEOUT - (clock() - started_at)
@@ -344,26 +387,27 @@ async def consume_safe_live_stream(
         released = guard.feed(chunk)
         if released:
             raw_parts.append(released)
-            await _deliver(on_commit, command_filter.feed(released))
+            await deliver_checked(command_filter.feed(released))
 
     tail_result = guard.finish()
     if tail_result.committed_text and command_filter.stop_reason is None:
         raw_parts.append(tail_result.committed_text)
-        await _deliver(on_commit, command_filter.feed(tail_result.committed_text))
+        await deliver_checked(command_filter.feed(tail_result.committed_text))
 
     visible_tail = ""
     command_reason = command_filter.stop_reason
     if tail_result.stop_reason is None and command_reason is None:
         visible_tail, command_reason = command_filter.finish()
-        await _deliver(on_commit, visible_tail)
+        await deliver_checked(visible_tail)
 
-    stop_reason = tail_result.stop_reason or command_reason
+    stop_reason = guard.stop_reason or tail_result.stop_reason or command_reason
     if stop_reason:
         await _close_async_iterator(iterator, source)
 
     return StreamSafetyResult(
-        committed_text="".join(raw_parts),
+        # Stopped output must never execute any commands from the partial reply.
+        committed_text=visible_history if stop_reason else "".join(raw_parts),
         stop_reason=stop_reason,
-        notice="回复连接异常，可重试" if stop_reason else "",
+        notice=_STOP_NOTICES.get(stop_reason, "回复已停止，可重试。") if stop_reason else "",
         diagnostic_error=diagnostic_error,
     )

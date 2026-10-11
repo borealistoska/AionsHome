@@ -1,5 +1,7 @@
 import asyncio
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 from contextlib import ExitStack, asynccontextmanager
 from unittest.mock import MagicMock
@@ -34,6 +36,79 @@ class _Chunks:
 
 
 class ChatroomStreamSafetyTest(unittest.IsolatedAsyncioTestCase):
+    async def test_reply_is_finalized_while_audio_is_still_synthesizing(self):
+        # A slow provider must not hold the final, formatted message hostage.
+        for route in ("aion", "connor", "connor_private"):
+            with self.subTest(route=route), tempfile.TemporaryDirectory() as tmp, ExitStack() as stack:
+                queue = asyncio.Queue()
+                release_audio = asyncio.Event()
+                audio_started = asyncio.Event()
+                sender = "aion" if route == "aion" else "connor"
+                reply = "**这是一条已经生成完整的回复。**"
+                real_streamer = chatroom_routes.TTSStreamer
+
+                async def stream(*args):
+                    yield reply
+
+                async def slow_audio(*args, **kwargs):
+                    audio_started.set()
+                    await release_audio.wait()
+                    return b"audio"
+
+                def make_streamer(msg_id, voice, manager, **kwargs):
+                    return real_streamer(msg_id, voice, cache_dir=Path(tmp),
+                                         cache_max_bytes=None, **kwargs)
+
+                async def save(room_id, sender, content, msg_id, **kwargs):
+                    return {"id": msg_id, "sender": sender, "content": content, "attachments": []}
+
+                for name, value in {
+                    "build_aion_group_context": AsyncMock(return_value=([], {})),
+                    "build_connor_group_context": AsyncMock(return_value=([], {})),
+                    "build_connor_1v1_context": AsyncMock(return_value=([], {})),
+                    "stream_ai": stream, "_stream_connor_model": stream,
+                    "resolve_model_transport_mode": lambda _: "legacy",
+                    "TTSStreamer": make_streamer, "_save_msg": save,
+                    "_process_chatroom_commands": AsyncMock(return_value=(reply, {})),
+                    "_extract_and_save_images": AsyncMock(return_value=[]),
+                    "_emit_chatroom_debug": AsyncMock(),
+                    "_chatroom_debug_payload": MagicMock(return_value={}),
+                    "_fire_chatroom_followups": MagicMock(),
+                }.items():
+                    stack.enter_context(patch.object(chatroom_routes, name, value))
+                stack.enter_context(patch("tts._request_tts_audio", new=slow_audio))
+
+                if route == "aion":
+                    coroutine = chatroom_routes._reply_aion(
+                        "room", [], 30, "hello", "model", queue, tts_enabled=True, tts_voice="voice")
+                elif route == "connor":
+                    coroutine = chatroom_routes._reply_connor(
+                        "room", [], 30, "hello", queue, tts_enabled=True, tts_voice="voice")
+                else:
+                    coroutine = chatroom_routes._generate_connor_reply(
+                        "room", {}, [], queue, 30, tts_enabled=True, tts_connor_voice="voice")
+                task = asyncio.create_task(coroutine)
+                events = []
+                try:
+                    async def receive_final():
+                        while True:
+                            event = await queue.get()
+                            events.append(event)
+                            if event["type"] == f"{sender}_done":
+                                return event
+
+                    final = await asyncio.wait_for(receive_final(), 1)
+                    self.assertEqual(final["message"]["content"], reply)
+                    await asyncio.wait_for(audio_started.wait(), 1)
+                    self.assertFalse(task.done(), "SSE must stay open for the remaining audio")
+                    self.assertNotIn("tts_done", [event["type"] for event in events])
+                finally:
+                    release_audio.set()
+                    await asyncio.wait_for(task, 2)
+                remaining = [queue.get_nowait()["type"] for _ in range(queue.qsize())]
+                self.assertIn("tts_chunk", remaining)
+                self.assertIn("tts_done", remaining)
+
     async def test_persisted_failed_reply_can_be_loaded_and_regenerated_by_same_ai(self):
         async with aiosqlite.connect(":memory:") as db:
             await db.executescript("""
@@ -219,6 +294,7 @@ class ChatroomStreamSafetyTest(unittest.IsolatedAsyncioTestCase):
 
         tts = MagicMock()
         tts.feed_async = AsyncMock()
+        tts.abort = AsyncMock()
         tts.has_emitted_audio = True
         outcome = await _consume_chatroom_realtime_stream(
             stream, asyncio.Queue(), chunk_type="aion_chunk",
@@ -240,7 +316,7 @@ class ChatroomStreamSafetyTest(unittest.IsolatedAsyncioTestCase):
             {"type": "error", "content": saved["content"], "message": saved},
         )
 
-    async def test_connor_safe_live_failure_resets_bubble_then_uses_legacy_once(self):
+    async def test_connor_safe_live_failure_keeps_text_without_retry(self):
         queue = asyncio.Queue()
         attempts = 0
 
@@ -261,11 +337,11 @@ class ChatroomStreamSafetyTest(unittest.IsolatedAsyncioTestCase):
         events = []
         while not queue.empty():
             events.append(await queue.get())
-        self.assertEqual(attempts, 2)
-        self.assertTrue(outcome.used_fallback)
-        self.assertFalse(outcome.manual_retry_required)
-        self.assertEqual(outcome.result.committed_text, "旧管线完整回复")
-        self.assertIn({"type": "connor_reset"}, events)
+        self.assertEqual(attempts, 1)
+        self.assertFalse(outcome.used_fallback)
+        self.assertTrue(outcome.manual_retry_required)
+        self.assertTrue(outcome.result.committed_text.startswith("安全正文。"))
+        self.assertNotIn({"type": "connor_reset"}, events)
 
     async def test_chatroom_emits_clean_prefix_and_nonspoken_stop_notice(self):
         queue = asyncio.Queue()
@@ -292,7 +368,7 @@ class ChatroomStreamSafetyTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("unreachable", visible)
         self.assertTrue(visible.endswith(f"[{result.notice}]"))
 
-    async def test_aion_safe_live_failure_uses_aion_reset_event(self):
+    async def test_aion_safe_live_failure_does_not_reset_text(self):
         queue = asyncio.Queue()
         attempts = 0
 
@@ -313,8 +389,8 @@ class ChatroomStreamSafetyTest(unittest.IsolatedAsyncioTestCase):
         events = []
         while not queue.empty():
             events.append(await queue.get())
-        self.assertTrue(outcome.used_fallback)
-        self.assertIn({"type": "aion_reset"}, events)
+        self.assertFalse(outcome.used_fallback)
+        self.assertNotIn({"type": "aion_reset"}, events)
 
 
 if __name__ == "__main__":

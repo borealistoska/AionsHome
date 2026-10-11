@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const source = fs.readFileSync(path.join(__dirname, 'static', 'settings.html'), 'utf8');
+const source = fs.readFileSync(path.join(__dirname, 'static', 'settings.html'), 'utf8').replace(/\r\n/g, '\n');
 const renderSource = source.match(/function renderModelTransportModes\(\) \{[\s\S]*?\n\}\n\nfunction collectModelTransportModes/)[0]
   .replace(/\n\nfunction collectModelTransportModes$/, '');
 
@@ -20,10 +20,6 @@ const context = {
 
 vm.runInNewContext(`${renderSource}\nrenderModelTransportModes();`, context);
 
-assert.match(list.innerHTML, /Codex-Sol/);
-assert.doesNotMatch(list.innerHTML, /普通中转模型/);
-assert.doesNotMatch(list.innerHTML, /<select/);
-assert.match(list.innerHTML, /<button[^>]*>旧版保守模式/);
-assert.match(list.innerHTML, /<button[^>]*>安全实时流式/);
-
-console.log('model transport settings UI tests passed');
+assert.match(list.innerHTML, /已统一启用/);
+assert.doesNotMatch(list.innerHTML, /<button|<select|旧版保守模式/);
+console.log('unified model transport UI passed');

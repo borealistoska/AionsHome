@@ -298,7 +298,7 @@ def _chatroom_reply_failure_text(sender: str, reason: str | None = None) -> str:
     if not detail or lowered in {"empty", "empty_response", "no_content"}:
         return f"{label} 本次没有成功返回回复，请重试。"
     detail = {"transport": "连接中断", "quality": "返回内容异常，回复已停止",
-              "length": "回复超过长度限制"}.get(lowered, detail)
+              "length": "回复达到 3000 字符上限", "repetition": "检测到持续重复，回复已停止"}.get(lowered, detail)
     return f"{label} 本次回复失败：{detail}"
 
 
@@ -1820,6 +1820,7 @@ async def _chatroom_memory_search(room_id: str, sender: str, model_key: str, pay
         who=actor,
         model_key=model_key,
         excluded_capabilities={"memory_search"},
+        profile_query=original_question,
     )
     if ability_block:
         prefix_msgs.extend([
@@ -3820,7 +3821,8 @@ async def _generate_connor_reply(room_id, room, msgs, _q, context_limit, *, conn
         )
         return
 
-    # TTS 用干净文本
+    # 合成与消息落库并行；正式排版不等待语音供应商。
+    tts_flush_task = None
     if tts_enabled and tts_connor_voice and clean_text and tts_from_model:
         if live_tts is None:
             live_tts = TTSStreamer(
@@ -3831,7 +3833,7 @@ async def _generate_connor_reply(room_id, room, msgs, _q, context_limit, *, conn
             )
         if transport_outcome.used_fallback or transport_mode != "safe_live":
             live_tts.feed(clean_text)
-        await live_tts.flush()
+        tts_flush_task = spawn_generation_task(live_tts.flush())
 
     if safety_notice:
         clean_text = f"{clean_text}\n\n[{safety_notice}]".strip()
@@ -3844,6 +3846,9 @@ async def _generate_connor_reply(room_id, room, msgs, _q, context_limit, *, conn
         reasoning_content=usage_meta.get("reasoning_content", "").strip(),
     )
     await _q.put({"type": "connor_done", "message": msg})
+    # 保持 SSE 开放到音频发完，也保留群聊语音的先后顺序。
+    if tts_flush_task:
+        await tts_flush_task
     await _emit_chatroom_debug(_q, _chatroom_debug_payload(
         room_id=room_id,
         model_key=connor_model_key,
@@ -4022,13 +4027,14 @@ async def _reply_aion(room_id, msgs, context_limit, query_text, model_key, _q, *
         _fire_chatroom_followups(triggered, room_id, "aion", model_key, aion_msg_id)
         return digest_out
 
-    # TTS 用干净文本
+    # 合成与消息落库并行；正式排版不等待语音供应商。
+    tts_flush_task = None
     if tts_enabled and tts_voice and clean_text and tts_from_model:
         if live_tts is None:
             live_tts = TTSStreamer(aion_msg_id, tts_voice, manager, sse_queue=_q)
         if transport_outcome.used_fallback or transport_mode != "safe_live":
             live_tts.feed(clean_text)
-        await live_tts.flush()
+        tts_flush_task = spawn_generation_task(live_tts.flush())
 
     if safety_notice:
         clean_text = f"{clean_text}\n\n[{safety_notice}]".strip()
@@ -4041,6 +4047,9 @@ async def _reply_aion(room_id, msgs, context_limit, query_text, model_key, _q, *
         reasoning_content=usage_meta.get("reasoning_content", "").strip(),
     )
     await _q.put({"type": "aion_done", "message": aion_msg})
+    # 保持 SSE 开放到音频发完，也保留群聊语音的先后顺序。
+    if tts_flush_task:
+        await tts_flush_task
     await _emit_chatroom_debug(_q, _chatroom_debug_payload(
         room_id=room_id,
         model_key=model_key,
@@ -4158,7 +4167,8 @@ async def _reply_connor(room_id, msgs, context_limit, query_text, _q, *, connor_
         )
         return digest_out
 
-    # TTS 用干净文本
+    # 合成与消息落库并行；正式排版不等待语音供应商。
+    tts_flush_task = None
     if tts_enabled and tts_voice and clean_text and tts_from_model:
         if live_tts is None:
             live_tts = TTSStreamer(
@@ -4169,7 +4179,7 @@ async def _reply_connor(room_id, msgs, context_limit, query_text, _q, *, connor_
             )
         if transport_outcome.used_fallback or transport_mode != "safe_live":
             live_tts.feed(clean_text)
-        await live_tts.flush()
+        tts_flush_task = spawn_generation_task(live_tts.flush())
 
     if safety_notice:
         clean_text = f"{clean_text}\n\n[{safety_notice}]".strip()
@@ -4182,6 +4192,9 @@ async def _reply_connor(room_id, msgs, context_limit, query_text, _q, *, connor_
         reasoning_content=usage_meta.get("reasoning_content", "").strip(),
     )
     await _q.put({"type": "connor_done", "message": connor_msg})
+    # 保持 SSE 开放到音频发完，也保留群聊语音的先后顺序。
+    if tts_flush_task:
+        await tts_flush_task
     await _emit_chatroom_debug(_q, _chatroom_debug_payload(
         room_id=room_id,
         model_key=connor_model_key,
@@ -4308,7 +4321,7 @@ async def list_room_memories(room_id: str):
                     item.get("source_start_ts") and item.get("source_end_ts")
                     and not str(item.get("source_msg_id") or "").strip()
                 ) else "long_term"
-            item["memory_kind_label"] = "日常" if item["memory_kind"] == "daily" else "长期重要"
+            item["memory_kind_label"] = {'daily':'日常','friend':'朋友记忆','long_term':'长期重要'}.get(item['memory_kind'],'长期重要')
             explicit_source = bool(str(item.get("source_msg_id") or "").strip())
             source_ids = _source_ids_for_chatroom_memory(item)
             if explicit_source:
@@ -4350,7 +4363,7 @@ async def create_memory(room_id: str, body: MemoryCreate):
         content=body.content,
         keywords=body.keywords,
         importance=body.importance,
-        memory_kind="daily" if body.memory_kind == "daily" else "long_term",
+        memory_kind=body.memory_kind if body.memory_kind in ('daily','friend') else 'long_term',
         evidence_summary=body.evidence_summary,
     )
     return {"ok": True, "id": mem_id}
@@ -4372,7 +4385,7 @@ async def update_memory(mem_id: str, body: MemoryUpdate):
             vals.append(body.importance)
         if body.memory_kind is not None:
             sets.append("memory_kind=?")
-            vals.append("daily" if body.memory_kind == "daily" else "long_term")
+            vals.append(body.memory_kind if body.memory_kind in ('daily','friend') else 'long_term')
         if body.unresolved is not None:
             sets.append("unresolved=?")
             vals.append(1 if body.unresolved else 0)
