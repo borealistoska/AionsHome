@@ -89,7 +89,7 @@ CAPABILITY_DEFS: list[CapabilityDef] = [
     CapabilityDef("moment", "发布朋友圈", "social", "注入 [MOMENT:内容|true/false]，让模型可以在合适时发布朋友圈。"),
     CapabilityDef("pat", "AI 拍拍", "social", "让 AI 自己决定怎么拍：私聊里拍你或自己，群聊里也能拍另一位 AI。关闭只停用 AI 拍拍，你仍可手动拍拍，已有拍拍继续进入聊天上下文。"),
     CapabilityDef("rps", "猜拳", "core", "遇到商议不决的事情时，可以通过猜拳决胜。关闭后不再向 AI 提示这项能力，已有邀请仍可继续。"),
-    CapabilityDef("mini_game", "小游戏邀请", "core", "让 AI 在你无聊或时机合适时邀请你玩桌球、斗地主，点击聊天中的邀请按钮进入游戏。关闭后不再发起新邀请，已有按钮仍可使用。"),
+    CapabilityDef("mini_game", "小游戏邀请", "core", "让 AI 在你无聊或时机合适时邀请你玩桌球、斗地主、德州扑克、吹牛骰子，点击聊天中的邀请按钮进入游戏。关闭后不再发起新邀请，已有按钮仍可使用。"),
     CapabilityDef("memory_write", "写入记忆", "social", "注入 [MEMORY:内容]，让模型可以记录重要记忆。"),
     CapabilityDef(
         "memory_search",
@@ -613,7 +613,8 @@ async def build_capability_prompt_items(
     if "mini_game" not in excluded_capabilities and is_capability_enabled("mini_game"):
         abilities.append(
             f"当{user_name}感到无聊或你认为时机合适时，可以邀请{user_name}玩一局小游戏。"
-            "当前游戏：桌球、斗地主。在回复中使用[小游戏：桌球]或[小游戏：斗地主]，"
+            "当前游戏：桌球、斗地主、德州扑克、吹牛骰子。"
+            "在回复中使用[小游戏：桌球]、[小游戏：斗地主]、[小游戏：德州扑克]或[小游戏：吹牛骰子]，"
             "回复下方会出现进入游戏的邀请按钮；每次回复最多邀请一个游戏。"
         )
 

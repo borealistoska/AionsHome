@@ -10,7 +10,10 @@ from ws import manager
 
 
 GAME_COMMAND_PATTERN = re.compile(r'\[\s*小游戏\s*[：:]\s*([^\]]*)\]')
-GAME_NAMES = {'桌球': '桌球', '台球': '桌球', '斗地主': '斗地主'}
+GAME_NAMES = {
+    '桌球': '桌球', '台球': '桌球', '斗地主': '斗地主',
+    '德州扑克': '德州扑克', '吹牛骰子': '吹牛骰子',
+}
 
 
 async def process_game_invites(text, *, source_type, source_id, sender, source_msg_id='', on_saved=None):

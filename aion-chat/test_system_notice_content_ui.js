@@ -38,8 +38,9 @@ test('ordinary system notices remain one escaped text line', () => {
   assert.equal(html, '<span class="system-notice-text">星&lt;野&gt;翻找了记忆</span>');
 });
 
-test('mini game invites link only to the two game lobbies and escape actor names', () => {
-  for (const [game, url] of [['桌球', '/billiards'], ['斗地主', '/doudizhu']]) {
+test('mini game invites link only to supported game lobbies and escape actor names', () => {
+  for (const [game, url] of [['桌球', '/billiards'], ['斗地主', '/doudizhu'],
+    ['德州扑克', '/texas-holdem'], ['吹牛骰子', '/liars-dice']]) {
     const html = renderSystemNoticeContent('游戏邀请', {attachments: [
       {type: 'mini_game_invite', game, actor_name: '星<野>'},
     ]});
@@ -61,13 +62,15 @@ test('mini game buttons use the retained app page or the standalone game lobby',
   try {
     globalThis.window = {openSubPage: url => opened.push(url)};
     openMiniGame(event, '桌球');
+    openMiniGame(event, '德州扑克');
     globalThis.window = {parent: {openSubPage: url => opened.push(url)}};
     openMiniGame(event, '斗地主');
+    openMiniGame(event, '吹牛骰子');
     globalThis.window = {location: {}, parent: null};
     globalThis.window.parent = globalThis.window;
     openMiniGame(event, '桌球');
     assert.equal(window.location.href, '/billiards');
-    assert.deepEqual(opened, ['/billiards', '/doudizhu']);
+    assert.deepEqual(opened, ['/billiards', '/texas-holdem', '/doudizhu', '/liars-dice']);
     openMiniGame(event, 'unknown');
     assert.equal(window.location.href, '/billiards');
   } finally {

@@ -19,6 +19,8 @@ class GameInvitePromptTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn('测试月亮', prompt)
                 self.assertIn('[小游戏：桌球]', prompt)
                 self.assertIn('[小游戏：斗地主]', prompt)
+                self.assertIn('[小游戏：德州扑克]', prompt)
+                self.assertIn('[小游戏：吹牛骰子]', prompt)
             excluded = await capabilities.build_capability_prompt_items('测试月亮', excluded_capabilities={'mini_game'})
             self.assertFalse(any('小游戏' in text for text in excluded))
         with patch.object(capabilities, 'is_capability_enabled', return_value=False):
@@ -51,7 +53,8 @@ class GameInviteTests(unittest.IsolatedAsyncioTestCase):
     async def test_both_private_chats_and_group_save_ordered_invites_once(self):
         from context_builder import render_merged_timeline
         cases = [('private','private','aion','桌球'), ('chatroom','companion','connor','斗地主'),
-                 ('chatroom','group','aion','斗地主'), ('chatroom','group','connor','台球')]
+                 ('chatroom','group','aion','斗地主'), ('chatroom','group','connor','台球'),
+                 ('private','private','aion','德州扑克'), ('chatroom','companion','connor','吹牛骰子')]
         for index, (scope, source, actor, game) in enumerate(cases):
             saved = AsyncMock()
             kwargs = dict(source_type=scope, source_id=source, sender=actor,
@@ -67,9 +70,9 @@ class GameInviteTests(unittest.IsolatedAsyncioTestCase):
             history = render_merged_timeline([{**message, 'sender':'system', 'source':'group'}], actor)
             self.assertIn('邀请测试月亮', json.dumps(history, ensure_ascii=False))
         async with aiosqlite.connect(self.path) as db:
-            self.assertEqual((await (await db.execute('SELECT COUNT(*) FROM messages')).fetchone())[0], 1)
-            self.assertEqual((await (await db.execute('SELECT COUNT(*) FROM chatroom_messages')).fetchone())[0], 3)
-        self.assertEqual(self.broadcast.await_count, 4)
+            self.assertEqual((await (await db.execute('SELECT COUNT(*) FROM messages')).fetchone())[0], 2)
+            self.assertEqual((await (await db.execute('SELECT COUNT(*) FROM chatroom_messages')).fetchone())[0], 4)
+        self.assertEqual(self.broadcast.await_count, 6)
 
     async def test_disabled_unknown_and_user_commands_do_not_create_invites(self):
         kwargs = dict(source_type='private', source_id='private', sender='aion', source_msg_id='reply')
