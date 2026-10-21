@@ -708,22 +708,36 @@ async def _speak_ai_speech(game_id: str, player: str, speech: str, event_index: 
         pass
 
 
-def _format_settlement_message(state: dict) -> str:
+def _settlement_result_card(state: dict) -> dict:
     settle = _settlement(state)
-    remaining = settle["remainingCounts"]
+    names = _player_names()
+    landlord_won = settle["winner"] == settle["landlord"]
+    winners = [settle["landlord"]] if landlord_won else [p for p in PLAYERS if p != settle["landlord"]]
+    return {
+        "type": "doudizhu_result",
+        "game_id": state["id"],
+        "outcome": ("地主方获胜" if landlord_won else "农民方获胜") + " · " + "、".join(names[p] for p in winners),
+        "winnerName": settle["winnerName"],
+        "landlordName": settle["landlordName"],
+        "remaining": " · ".join(f"{names[p]} {settle['remainingCounts'][p]} 张" for p in PLAYERS if p != settle["winner"]),
+        "walletLines": (state.get("wallet_settlement") or {}).get("lines") or [],
+    }
+
+
+def _format_settlement_message(state: dict) -> str:
+    card = _settlement_result_card(state)
     lines = [
         "【斗地主战报】",
-        f"本局赢家：{settle['winnerName']}",
-        f"地主：{settle['landlordName']}",
-        "剩余手牌：" + "，".join(f"{_player_name(p)} {remaining.get(p, 0)} 张" for p in PLAYERS if p != settle["winner"]),
+        card["outcome"],
+        f"先出完：{card['winnerName']}",
+        f"地主：{card['landlordName']}",
+        "剩余手牌：" + card["remaining"],
     ]
-    wallet = state.get("wallet_settlement") or {}
-    wallet_lines = wallet.get("lines") or []
+    wallet_lines = card["walletLines"]
     if wallet_lines:
         lines.append("钱包结算：" + "；".join(wallet_lines))
-    if settle.get("bottomCards"):
-        lines.append("底牌：" + " ".join(settle["bottomCards"]))
-    lines.append("刚打完一局，回群里同步一下战况。")
+    if state.get("bottom"):
+        lines.append("底牌：" + " ".join(state["bottom"]))
     return "\n".join(lines)
 
 
@@ -1101,6 +1115,7 @@ async def announce_result():
         if state.get("phase") != "game_over" or not state.get("winner"):
             return {"ok": False, "error": "本局还没有结算", "state": _public_state(state)}
         content = _format_settlement_message(state)
+        attachments = [_settlement_result_card(state), {"type": "system_model_context"}]
 
     room_id = await _latest_group_room_id()
     if not room_id:
@@ -1108,6 +1123,6 @@ async def announce_result():
 
     from routes.chatroom import _save_msg
 
-    msg = await _save_msg(room_id, "user", content, f"cm_{int(time.time() * 1000)}_ddz")
+    msg = await _save_msg(room_id, "system", content, f"cm_{int(time.time() * 1000)}_ddz", attachments=attachments)
     asyncio.create_task(_trigger_group_replies(room_id))
     return {"ok": True, "roomId": room_id, "message": msg, "state": _public_state(state)}

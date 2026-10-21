@@ -17,6 +17,47 @@ if str(ROOT) not in sys.path:
 from context_builder import render_merged_timeline
 
 
+class TransferContextTest(unittest.TestCase):
+    def test_transfer_history_identifies_both_parties_in_private_and_group_chats(self):
+        cases = [
+            ("aion", "private", "assistant", "[转账：52.50元]", "「Aion」给「Ithil」转账 52.50元"),
+            ("aion", "private", "user", "[转账：20元]", "「Ithil」给「Aion」转账 20元"),
+            ("connor", "private", "connor", "[转账：30元]", "「Connor」给「Ithil」转账 30元"),
+            ("connor", "private", "user", "[转账：40元]", "「Ithil」给「Connor」转账 40元"),
+            ("connor", "group", "aion", "[转账：50元]", "「Aion」给「Ithil」转账 50元"),
+            ("aion", "group", "connor", "[转账：60元]", "「Connor」给「Ithil」转账 60元"),
+            ("connor", "group", "user", "[转账给 Aion ：70.25元]", "「Ithil」给「Aion」转账 70.25元"),
+            ("aion", "group", "user", "[转账给Connor: 80元]", "「Ithil」给「Connor」转账 80元"),
+            ("aion", "group", "user", "[转账：90元]", "「Ithil」给「Connor」转账 90元"),
+            ("connor", "group", "user", "[转账：90元]", "「Ithil」给「Connor」转账 90元"),
+        ]
+        with (
+            patch("context_builder.load_worldbook", return_value={"ai_name": "Aion", "user_name": "Ithil"}),
+            patch("chatroom.load_chatroom_config", return_value={"connor_name": "Connor"}),
+        ):
+            for who, source, sender, tag, expected in cases:
+                with self.subTest(who=who, source=source, sender=sender, tag=tag):
+                    message = {"source": source, "sender": sender, "content": f"零花钱~{tag}", "created_at": 1}
+                    rendered = render_merged_timeline([message], who)[-1]["content"]
+                    self.assertIn(expected, rendered)
+                    self.assertIn("零花钱~", rendered)
+                    self.assertIn("<meta>发送时间：", rendered)
+                    self.assertEqual(message["content"], f"零花钱~{tag}")
+
+    def test_transfer_uses_configured_names_and_preserves_other_wallet_markers(self):
+        with (
+            patch("context_builder.load_worldbook", return_value={"ai_name": "星星", "user_name": "月亮"}),
+            patch("chatroom.load_chatroom_config", return_value={"connor_name": "小熊"}),
+        ):
+            rendered = render_merged_timeline([
+                {"source": "group", "sender": "user", "content": "[转账给星星：12.34元][转账给小熊：5元][转账：-3元][转账：0元]"},
+            ], "connor")[-1]["content"]
+        self.assertIn("「月亮」给「星星」转账 12.34元", rendered)
+        self.assertIn("「月亮」给「小熊」转账 5元", rendered)
+        self.assertIn("[转账：-3元]", rendered)
+        self.assertIn("[转账：0元]", rendered)
+
+
 def test_lounge_report_summary_remains_visible_in_later_model_timeline():
     summary = "刚才去朋友家聊了养花，对方最近在种薄荷。"
     rendered = render_merged_timeline(

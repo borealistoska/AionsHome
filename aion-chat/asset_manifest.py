@@ -59,6 +59,8 @@ _DOCUMENT_ROUTES = {
     "/qq-social": "qq-social.html",
     "/english-corner": "english-corner.html",
     "/doudizhu": "doudizhu.html",
+    "/liars-dice": "table-games.html",
+    "/texas-holdem": "table-games.html",
     "/seeky": "seeky.html",
     "/wishes": "wishes.html",
     "/xhs-lite": "xhs-lite.html",

@@ -5,6 +5,28 @@ from routes import chatroom as chatroom_routes
 
 
 class ChatroomVoiceConnorModelTests(unittest.IsolatedAsyncioTestCase):
+    async def test_group_reply_uses_saved_aion_model_over_stale_payload(self):
+        reply = AsyncMock()
+        with (
+            patch.object(chatroom_routes, "_load_room_and_messages", new=AsyncMock(
+                return_value=({"id": "room-1", "type": "group"}, []),
+            )),
+            patch.object(chatroom_routes, "load_chatroom_config", return_value={
+                "aion_model": "group-model",
+            }),
+            patch.object(chatroom_routes, "_reply_aion", new=reply),
+            patch.object(chatroom_routes.cam, "reset_patrol_timer"),
+        ):
+            response = await chatroom_routes.reply_once(
+                "room-1",
+                chatroom_routes.ReplyOnceTrigger(speaker="aion", model="private-model"),
+            )
+            async for _chunk in response.body_iterator:
+                pass
+
+        reply.assert_awaited_once()
+        self.assertEqual(reply.await_args.args[4], "group-model")
+
     async def _capture_voice_route_model(self, room_type: str) -> str:
         captured = []
         body = chatroom_routes.MsgSend(

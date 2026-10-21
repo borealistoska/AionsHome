@@ -901,6 +901,67 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(ref['name'],content[1+i*2]['text'])
             self.assertEqual(content[2+i*2]['image_url']['url'],'data:image/png;base64,'+base64.b64encode(ref['name'].encode()).decode())
 
+    async def test_illustration_selects_photos_by_scene_name_and_alias(self):
+        import image_gen
+        await studio.change('book', illustrations=True, anchors=['anchor_a', 'anchor_b', 'anchor_c'])
+        await studio.change('chapter', content='两人在窗边喝茶。', status='ready')
+        for key, name, alias in [('a', '甲', ''), ('b', '乙', '小乙'), ('c', '丙', '')]:
+            await studio.save(dict(id='anchor_'+key, kind='anchor', conv_id='', name=name,
+                                  aliases=alias, appearance='', image='/uploads/'+key+'.png'))
+        plan = json.dumps({'scenes': [{'quote': '两人在窗边喝茶。', 'prompt': '甲和小乙喝茶', 'characters': ['甲', '小乙']}]})
+        with patch.object(studio, 'generate_text', new=AsyncMock(return_value=plan)), \
+                patch.object(studio, 'reference_path', side_effect=lambda url: self.root / Path(url).name), \
+                patch.object(image_gen, 'generate_image', new=AsyncMock(return_value='album/picture.png')) as generate:
+            await studio.illustrate('chapter')
+        self.assertEqual(generate.call_args.kwargs['references'], [
+            {'name': '甲', 'path': str(self.root / 'a.png')},
+            {'name': '乙', 'path': str(self.root / 'b.png')},
+        ])
+        chapter = await studio.load('chapter')
+        self.assertEqual(chapter['images'][0]['url'], '/uploads/album/picture.png')
+
+    async def test_retry_images_preserves_ready_scene_and_reports_timeout(self):
+        import image_gen
+        await studio.change('book', illustrations=True)
+        ready = dict(id='keep', after=2, prompt='keep', characters=[], status='ready', url='/uploads/keep.png')
+        failed = dict(id='retry', after=4, prompt='retry', characters=[], status='failed', url='')
+        await studio.change('chapter', content='窗边。喝茶。', status='ready', images=[ready, failed])
+        with patch.object(studio, 'generate_text', new=AsyncMock()) as plan, \
+                patch.object(image_gen, 'generate_image', new=AsyncMock(side_effect=TimeoutError())) as generate:
+            await studio.illustrate('chapter', retry=True)
+        plan.assert_not_awaited()
+        self.assertEqual(generate.await_count, 1)
+        chapter = await studio.load('chapter')
+        self.assertEqual(chapter['images'][0], ready)
+        self.assertEqual(chapter['images'][1]['id'], 'retry')
+        self.assertIn('超时', chapter['images'][1]['error'])
+
+    async def test_new_revision_waits_for_old_image_job_and_gets_its_own_picture(self):
+        import image_gen
+        await studio.change('book', illustrations=True)
+        await studio.change('chapter', content='旧版正文。', status='ready')
+        started, release = asyncio.Event(), asyncio.Event()
+        async def generate(*args, **kwargs):
+            if not started.is_set():
+                started.set()
+                await release.wait()
+                return 'old.png'
+            return 'new.png'
+        async def plan(*args):
+            quote = '新版正文。' if '新版正文。' in args[1] else '旧版正文。'
+            return json.dumps({'scenes': [{'quote': quote, 'prompt': quote, 'characters': []}]})
+        with patch.object(studio, 'generate_text', new=AsyncMock(side_effect=plan)), \
+                patch.object(image_gen, 'generate_image', new=AsyncMock(side_effect=generate)):
+            old = asyncio.create_task(studio.illustrate('chapter'))
+            await started.wait()
+            await studio.change('chapter', content='新版正文。', revision=2, images=[])
+            new = asyncio.create_task(studio.illustrate('chapter'))
+            await asyncio.sleep(0)
+            release.set()
+            await asyncio.gather(old, new)
+        chapter = await studio.load('chapter')
+        self.assertEqual([s['url'] for s in chapter['images']], ['/uploads/new.png'])
+
     async def test_deleting_story_cancels_speech_for_a_historical_dialogue_message(self):
         async with studio.get_db() as db:
             await db.execute('INSERT INTO theater_messages VALUES(?,?,?,?)',('tm_old','往日的故事。'*100,'book','assistant'))

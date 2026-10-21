@@ -1,6 +1,7 @@
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parent
@@ -51,6 +52,23 @@ class ThinkTagReasoningTests(unittest.TestCase):
 
         self.assertEqual(visible, "Hi  there")
         self.assertEqual(meta.get("reasoning_content"), "secret")
+
+
+class ThinkTagStreamActivityTests(unittest.IsolatedAsyncioTestCase):
+    async def test_filtered_thinking_still_reaches_idle_watchdog(self):
+        import ai_providers
+        from stream_safety import StreamActivity
+        async def relay(*args, **kwargs):
+            for chunk in ['<think>', 'working', '</think>', 'reply']:
+                yield chunk
+        meta = {}
+        with patch.dict(ai_providers.MODELS, {'test-relay': {'provider': 'custom_openai', 'model': 'fake'}}), patch.object(
+            ai_providers, 'call_custom_openai', relay
+        ):
+            chunks = [c async for c in ai_providers.stream_ai([], 'test-relay', meta, include_device_context=False)]
+        self.assertEqual(''.join(chunks), 'reply')
+        self.assertEqual(meta['reasoning_content'], 'working')
+        self.assertEqual(sum(isinstance(c, StreamActivity) for c in chunks), 3)
 
 
 class CodexUsageMetaTests(unittest.TestCase):

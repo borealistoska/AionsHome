@@ -25,6 +25,7 @@ from capabilities import (
 )
 from app_supervision_ai import APP_COMMAND_PATTERN
 from capabilities import PAT_COMMAND_PATTERN, pat_history_command
+from rps import RPS_COMMAND_PATTERN
 from activity import get_device_context_for_prompt
 from memory import (
     instant_digest, recall_memories, build_surfacing_memories,
@@ -32,6 +33,7 @@ from memory import (
 )
 
 # ── 工具指令正则（供调用方做后处理用，集中定义） ──
+from game_invites import GAME_COMMAND_PATTERN
 MUSIC_CMD_PATTERN = re.compile(r'\[MUSIC:([^\]]+)\]')
 MOMENT_CMD_PATTERN = re.compile(r'\[MOMENT:(.+?)(?:\|(true|false))?\]')
 MEMORY_CMD_PATTERN = re.compile(
@@ -69,7 +71,7 @@ _ALL_CMD_PATTERNS = [
     HOME_CMD_PATTERN, BAND_VIBRATE_CMD_PATTERN, BAND_NOTE_CMD_PATTERN,
     LUCKIN_CMD_PATTERN, TRANSFER_CMD_PATTERN, PRIVATE_WHISPER_CMD_PATTERN,
     WECHAT_MESSAGE_PATTERN, WEB_SEARCH_CMD_PATTERN, WEB_EXTRACT_CMD_PATTERN,
-    APP_COMMAND_PATTERN, MEMORY_SEARCH_CMD_PATTERN, PAT_COMMAND_PATTERN,
+    APP_COMMAND_PATTERN, MEMORY_SEARCH_CMD_PATTERN, PAT_COMMAND_PATTERN, RPS_COMMAND_PATTERN, GAME_COMMAND_PATTERN,
 ]
 
 def strip_tool_commands(text: str) -> str:
@@ -277,6 +279,10 @@ async def build_ability_block(
             parts.append(outside)
     except (OSError, aiosqlite.Error):
         pass
+    from external_activity import recent_context as recent_activity_context
+    activity = await recent_activity_context(who)
+    if activity:
+        parts.append(activity)
     return "\n\n".join(parts)
 
 
@@ -522,6 +528,9 @@ SYSTEM_MSG_CONTEXT_KEYWORDS = ('搜索了', '点歌', '点了一首', '推荐了
 # 这些标记会泄漏文件路径到 LLM 上下文，污染 instant_digest 关键词，
 # 也会触发 Gemini CLI 的 agent 模式扫描文件，必须替换为干净占位符。
 _CHATROOM_IMG_TAG_RE = re.compile(r'\[\[image:[^\]]+\]\]')
+_TIMELINE_TRANSFER_PATTERN = re.compile(
+    r'\[转账(?:给([^：:]+?))?[：:]\s*(-?\d+(?:\.\d+)?)\s*元\]'
+)
 TIMELINE_IMAGE_CONTEXT_USER_TURNS = 2
 _TIMELINE_IMAGE_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png", ".gif", ".webp"})
 
@@ -574,6 +583,8 @@ def _is_model_visible_timeline_message(message: dict) -> bool:
     if message.get("sender") != "system":
         return True
     attachments = _parse_timeline_attachments(message.get("attachments", []))
+    if any(isinstance(a, dict) and a.get('type') in ('rps_pending_context', 'rps_synced_context') for a in attachments):
+        return False
     if any(isinstance(a, dict) and a.get('type') in ('svakom_command_notice', 'ankni_command_notice') for a in attachments):
         return False
     if trip_card(attachments) is not None:
@@ -916,6 +927,10 @@ def render_merged_timeline(
         message_attachments = _parse_timeline_attachments(
             msg.get("attachments", [])
         )
+        rps_context = [a['content'] for a in message_attachments
+                       if isinstance(a, dict) and a.get('type') == 'rps_context' and a.get('content')]
+        if rps_context:
+            content = (content + '\n[随本条消息同步的猜拳信息]\n' + '\n'.join(rps_context)).strip()
         from expressive_voice import transcript_for_context
         voice_transcript = transcript_for_context(message_attachments)
         if voice_transcript:
@@ -948,6 +963,24 @@ def render_merged_timeline(
             speaker = connor_name
         else:
             speaker = sender or "未知说话人"
+
+        if sender in ("user", "assistant", "aion", "connor"):
+            def _describe_transfer(match: re.Match) -> str:
+                target, amount = match.groups()
+                # 负数是钱包扣除标记，不描述为向对方转账。
+                if float(amount) <= 0:
+                    return match.group(0)
+                recipient = user_name
+                if sender == "user":
+                    # 与入账路由一致：群聊未指定收款人时默认进入伴侣钱包。
+                    if target:
+                        recipient = ai_name if target.strip() == ai_name else connor_name
+                    else:
+                        recipient = ai_name if source == "private" and who == "aion" else connor_name
+                return f"[「{speaker}」给「{recipient}」转账 {amount}元]"
+
+            content = _TIMELINE_TRANSFER_PATTERN.sub(_describe_transfer, content)
+
         label = "当前用户消息" if idx == last_user_idx and sender == "user" else "历史消息"
         content = f"{label} - {speaker}：{content}"
         role = "user"

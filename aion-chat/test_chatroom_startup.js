@@ -34,7 +34,7 @@ test('late model initialization preserves newer model settings', async () => {
     updateHeaderActions() {},
   };
   vm.runInNewContext(source.slice(source.indexOf('async function fetchChatroomModels('), source.indexOf('function updateHeaderActions(')), context);
-  const loading = context.fetchCurrentModel(Promise.resolve({ connor_model: 'old-connor', reply_order: 'aion_first' }));
+  const loading = context.fetchCurrentModel(Promise.resolve({ aion_model: 'old-aion', connor_model: 'old-connor', reply_order: 'aion_first' }));
   context.chatroomModel = 'new-aion'; context.chatroomConnorModel = 'new-connor'; context.chatroomReplyOrder = 'manual';
   resolveRequests();
   await loading;
@@ -81,6 +81,25 @@ function modelHarness(fetch) {
 
 const modelRows = [{ key: 'cheap-flash' }, { key: 'Codex-6-Sol' }, { key: 'Codex-6.1-Sol' }];
 
+test('startup uses the saved group model regardless of which settings request finishes first', async () => {
+  for (const configFirst of [true, false]) {
+    let releaseConfig, releaseConversations;
+    const config = new Promise(resolve => { releaseConfig = resolve; });
+    const conversations = new Promise(resolve => { releaseConversations = resolve; });
+    const { context } = modelHarness(async url => ({
+      ok: true, json: async () => url.includes('conversations') ? conversations : modelRows,
+    }));
+    const loading = context.fetchCurrentModel(config);
+    const finishConfig = () => releaseConfig({ aion_model: 'group-model' });
+    const finishConversations = () => releaseConversations([{ model: 'private-model' }]);
+    (configFirst ? finishConfig : finishConversations)();
+    await new Promise(resolve => setImmediate(resolve));
+    (configFirst ? finishConversations : finishConfig)();
+    await loading;
+    assert.equal(context.chatroomModel, 'group-model', `configFirst=${configFirst}`);
+  }
+});
+
 test('available models survive an unrelated conversation request failure', async () => {
   const { context } = modelHarness(async url => {
     if (url.includes('conversations')) throw new Error('network failure');
@@ -117,6 +136,7 @@ test('opening settings retries a model list that failed during startup', async (
     currentRoom: { id: 'room-1' }, Date,
     crLoadSettingsSnapshot: () => null, crPopulateSettings() {}, crCurrentSettingsConfig: () => ({}),
     crLoadTTSVoices() {}, crSaveSettingsSnapshot() {}, toast() {},
+    crIntimacyEnabled: () => false, crApplyIntimacyState() {}, crSyncIntimacy() {},
     api: async () => ({ room: { id: 'room-1' }, config: {} }),
   });
   selects.settingsOverlay = { classList: { add() {} } };

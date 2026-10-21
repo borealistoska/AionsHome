@@ -39,6 +39,9 @@ let crRoomMessageLoad = null;
 let crRoomMessageGeneration = 0;
 let crRenderedRoomId = null;
 let crMessageRevision = 0;
+window.isAionClientUpdateBusy = () => isSending || isAiChatting || isReplyOnce
+  || !!_ttsEngine?.playing || !!document.querySelector('.rps-dialog[open]')
+  || (!!document.getElementById('settingsOverlay')?.classList.contains('active') && !!crSettingsDirtyAt);
 
 window.addEventListener('aion-client-update-ready', () => {
   if (window.__aionClientUpdateScheduled) return;
@@ -143,6 +146,17 @@ function crName(sender) {
   return { user: crUserName || '我', aion: crAiName || 'AI', connor: crConnorName || '第二AI' }[sender] || sender;
 }
 
+window.AionRps?.bind({
+  container: document.getElementById('messages'),
+  composer: document.getElementById('rpsComposer'),
+  getContext: () => ({ scope: 'chatroom', source_id: currentRoom?.id,
+    names: { user: crName('user'), aion: crName('aion'), connor: crName('connor') },
+    actors: currentRoom?.type === 'connor_1v1' ? ['connor'] : ['aion', 'connor'] }),
+  getOptions: () => ({ model: chatroomModel, connor_model: chatroomConnorModel,
+    tts_enabled: crTtsEnabled, tts_aion_voice: crTtsAionVoice,
+    tts_connor_voice: crTtsConnorVoice, whisper_mode: crWhisperMode }),
+  onError: message => toast(message),
+});
 window.AionPat?.bind({
   container: document.getElementById('messages'),
   getContext: () => ({
@@ -334,9 +348,9 @@ const _ttsEngine = (function() {
         if (url === undefined) {
           if (q.finished) {
             const maxSeq = Object.keys(q.chunks).length > 0 ? Math.max(...Object.keys(q.chunks).map(Number)) : -1;
-            if (q.nextPlay > maxSeq) { eng.playOrder.shift(); delete eng.chunkQueues[msgId]; continue; }
+            if (q.nextPlay > maxSeq) { eng.audio.endSpeech?.(); eng.playOrder.shift(); delete eng.chunkQueues[msgId]; continue; }
             while (q.nextPlay <= maxSeq && q.chunks[q.nextPlay] === undefined) q.nextPlay++;
-            if (q.nextPlay > maxSeq) { eng.playOrder.shift(); delete eng.chunkQueues[msgId]; continue; }
+            if (q.nextPlay > maxSeq) { eng.audio.endSpeech?.(); eng.playOrder.shift(); delete eng.chunkQueues[msgId]; continue; }
             item = q.chunks[q.nextPlay];
             url = item && typeof item === "object" ? item.url : item;
           }
@@ -367,6 +381,7 @@ const _ttsEngine = (function() {
 	          crNotifyVoiceCallTTSChunkEnd(msgId);
 	          eng._next();
 	        };
+	        eng.audio.beginSpeech?.();
 	        eng.audio.src = url;
 	        eng.audio.onended = advance;
 	        eng.audio.onerror = advance;
@@ -385,6 +400,7 @@ const _ttsEngine = (function() {
         });
         return;
 	      }
+	      eng.audio.endSpeech?.();
 	      eng.playing = false;
 	      crAmbientResumeAfterTts();
 	      crNotifyVoiceCallTTSEnd();
@@ -406,8 +422,12 @@ const _ttsEngine = (function() {
         const qq = eng.chunkQueues[id];
         if (!qq || !qq.finished) break;
         const maxSeq = Object.keys(qq.chunks).length > 0 ? Math.max(...Object.keys(qq.chunks).map(Number)) : -1;
-        if (qq.nextPlay > maxSeq) { eng.playOrder.shift(); delete eng.chunkQueues[id]; } else break;
+        if (qq.nextPlay > maxSeq) { eng.audio.endSpeech?.(); eng.playOrder.shift(); delete eng.chunkQueues[id]; } else break;
       }
+      if (!eng.playing) eng._next();
+    },
+    connectionLost() {
+      for (const queue of Object.values(eng.chunkQueues)) queue.finished = true;
       if (!eng.playing) eng._next();
     },
     stop() {
@@ -415,6 +435,7 @@ const _ttsEngine = (function() {
       _stopRequested = true;
       clearResumeTimer();
 	      eng.audio.pause(); eng.audio.src = '';
+	      eng.audio.endSpeech?.();
 	      eng.chunkQueues = {}; eng.playOrder = []; eng.playing = false;
 	      crAmbientResumeAfterTts(500);
 	      crNotifyVoiceCallTTSEnd();
@@ -2113,16 +2134,18 @@ async function fetchCurrentModel(configPromise) {
     fetch('/api/conversations').then(resp => {
       if (!resp.ok) throw new Error(`会话列表加载失败 (${resp.status})`);
       return resp.json();
-    }).then(convs => {
-      if (chatroomModel === initial.aion && Array.isArray(convs) && convs.length > 0 && convs[0].model) {
-        chatroomModel = convs[0].model;
-      }
     }),
     Promise.resolve(configPromise || api('/config')).then(cfg => {
       if (cfg?.connor_model && chatroomConnorModel === initial.connor) chatroomConnorModel = cfg.connor_model;
       if (cfg?.reply_order && chatroomReplyOrder === initial.order) chatroomReplyOrder = cfg.reply_order;
+      return cfg;
     }),
   ]);
+  if (chatroomModel === initial.aion) {
+    const cfg = results[2].status === 'fulfilled' ? results[2].value : null;
+    const convs = results[1].status === 'fulfilled' ? results[1].value : null;
+    chatroomModel = cfg?.aion_model || (Array.isArray(convs) && convs[0]?.model) || initial.aion;
+  }
   for (const result of results) {
     if (result.status === 'rejected') console.warn('[chatroom models]', result.reason);
   }
@@ -2217,11 +2240,180 @@ async function deleteRoom(roomId) {
   await loadRooms();
 }
 
+const CR_INTIMACY_KEY_PREFIX = 'aionshome_intimacy_room_v1:';
+
+function crIntimacyStorageKey(roomId) {
+  return CR_INTIMACY_KEY_PREFIX + String(roomId || '');
+}
+
+function crIntimacyEnabled(roomId) {
+  return !!roomId && localStorage.getItem(crIntimacyStorageKey(roomId)) === '1';
+}
+
+function crApplyIntimacyState(data = {}) {
+  const toggle = document.getElementById('setIntimacySkillEnabled');
+  const status = document.getElementById('crIntimacySkillStatus');
+  const startBtn = document.getElementById('crIntimacyStartBtn');
+  const previewBtn = document.getElementById('crIntimacyPreviewBtn');
+  const enabled = !!data.enabled;
+  const state = data.state || (enabled ? 'armed' : 'off');
+  if (toggle) toggle.checked = enabled;
+  if (status) {
+    const seen = new Set(Array.isArray(data.seen_actors) ? data.seen_actors : []);
+    let receipt = '';
+    if (state === 'active') {
+      if (currentRoom?.type === 'group') {
+        const aionName = crAiName || 'AI';
+        const connorName = crConnorName || '第二AI';
+        if (seen.has('aion') && seen.has('connor')) receipt = ' · 双人已读取';
+        else if (seen.has('aion')) receipt = ` · ${aionName}已读取 · ${connorName}等待`;
+        else if (seen.has('connor')) receipt = ` · ${connorName}已读取 · ${aionName}等待`;
+        else receipt = ' · 等待读取';
+      } else {
+        receipt = seen.has('connor') ? ' · 已读取' : ' · 等待读取';
+      }
+    }
+    status.textContent = (state === 'active' ? '进行中' : (state === 'armed' ? '待机' : '关闭')) + receipt;
+  }
+  if (startBtn) {
+    startBtn.style.display = enabled ? 'block' : 'none';
+    startBtn.textContent = state === 'active' ? '换一套玩法' : '开始本轮';
+    startBtn.disabled = false;
+  }
+  if (previewBtn) previewBtn.disabled = state !== 'active';
+}
+
+async function crSyncIntimacy(roomId) {
+  if (!roomId) return;
+  const enabled = crIntimacyEnabled(roomId);
+  try {
+    const state = await api('/rooms/' + encodeURIComponent(roomId) + '/intimacy');
+    if (currentRoom?.id === roomId) crApplyIntimacyState(state);
+  } catch (e) {
+    crApplyIntimacyState({ enabled, state: enabled ? 'armed' : 'off' });
+    console.warn('[intimacy] room sync failed:', e);
+  }
+}
+
+async function crToggleIntimacySkill() {
+  if (!currentRoom) return;
+  const enabled = !!document.getElementById('setIntimacySkillEnabled')?.checked;
+  localStorage.setItem(crIntimacyStorageKey(currentRoom.id), enabled ? '1' : '0');
+  try {
+    const state = await api('/rooms/' + encodeURIComponent(currentRoom.id) + '/intimacy', {
+      method: 'PUT',
+      body: JSON.stringify({ enabled }),
+    });
+    crApplyIntimacyState(state);
+  } catch (e) {
+    crApplyIntimacyState({ enabled, state: enabled ? 'armed' : 'off' });
+    console.warn('[intimacy] room toggle failed:', e);
+  }
+}
+
+async function crStartIntimacyRound() {
+  if (!currentRoom || !document.getElementById('setIntimacySkillEnabled')?.checked) return;
+  const btn = document.getElementById('crIntimacyStartBtn');
+  if (btn) btn.disabled = true;
+  try {
+    const state = await api('/rooms/' + encodeURIComponent(currentRoom.id) + '/intimacy/start', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+    crApplyIntimacyState(state);
+  } catch (e) {
+    if (btn) btn.disabled = false;
+    console.warn('[intimacy] room start failed:', e);
+  }
+}
+
+function renderIntimacyPreviewCard(container, card) {
+  card = card || {};
+  const lines = [];
+  const add = (label, value) => {
+    const text = Array.isArray(value) ? value.filter(Boolean).join('、') : String(value || '').trim();
+    if (text) lines.push(`${label}：${text}`);
+  };
+  lines.push('核心');
+  add('主类', card.category);
+  add('子玩法', card.subtypes);
+  lines.push('', '场景与姿势');
+  add('地点', card.location);
+  add('主位', card.position);
+  add('换位', card.transition_position);
+  lines.push('', '心理与辅助');
+  add('暴露风险', card.exposure);
+  add('束缚', card.restraint);
+  add('道具', card.props);
+  add('服装玩法', card.clothing_play);
+  add('心理', card.psychology);
+  add('三人结构', card.group_dynamic);
+  add('射精玩法', card.ejaculation_play);
+  lines.push('', '最终设定');
+  if (card.mode === 'group') {
+    add('男性位 A', card.final_finish?.a);
+    add('男性位 B', card.final_finish?.b);
+    add('关系', card.final_finish?.relation);
+  } else {
+    add('目标', card.final_finish?.target);
+  }
+  container.textContent = lines.join('\n').replace(/\n{3,}/g, '\n\n');
+}
+
+async function crOpenIntimacyPreview() {
+  if (!currentRoom) return;
+  const modal = document.getElementById('crIntimacyPreviewModal');
+  const content = document.getElementById('crIntimacyPreviewContent');
+  const hint = document.getElementById('crIntimacyPreviewHint');
+  if (modal) modal.classList.add('show');
+  if (content) content.textContent = '正在翻开本轮卡片…';
+  if (hint) hint.textContent = '';
+  try {
+    const preview = await api('/rooms/' + encodeURIComponent(currentRoom.id) + '/intimacy/preview');
+    if (content) {
+      if (preview?.card) renderIntimacyPreviewCard(content, preview.card);
+      else content.textContent = '当前还没有抽取玩法。';
+    }
+    if (hint) hint.textContent = preview?.reroll_queued ? '新玩法已排队，会在当前回复完成后生效。' : '';
+  } catch (e) {
+    if (content) content.textContent = '暂时无法读取本轮玩法。';
+    console.warn('[intimacy] room preview failed:', e);
+  }
+}
+
+function crCloseIntimacyPreview() {
+  document.getElementById('crIntimacyPreviewModal')?.classList.remove('show');
+}
+
+async function crRerollIntimacyPreview() {
+  if (!currentRoom) return;
+  const btn = document.getElementById('crIntimacyPreviewRerollBtn');
+  if (btn) btn.disabled = true;
+  try {
+    const state = await api('/rooms/' + encodeURIComponent(currentRoom.id) + '/intimacy/start', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+    crApplyIntimacyState(state);
+    await crOpenIntimacyPreview();
+  } catch (e) {
+    console.warn('[intimacy] room preview reroll failed:', e);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 async function selectRoom(roomId) {
   document.getElementById('chatroomReplyPreparation')?.remove();
   const room = rooms.find(r => r.id === roomId);
   if (!room) return;
   currentRoom = room;
+  crApplyIntimacyState({
+    enabled: crIntimacyEnabled(roomId),
+    state: crIntimacyEnabled(roomId) ? 'armed' : 'off',
+  });
+  crSyncIntimacy(roomId);
+  window.AionRps?.refresh();
   crRenderProactiveOrbit();
   // 自动切换到对应 tab
   if (activeTab !== room.type) switchTab(room.type);
@@ -2250,6 +2442,7 @@ async function loadMessages() {
 
 async function refreshCurrentChatroomFromServer(options = {}) {
   if (!currentRoom) return false;
+  window.AionRps?.refresh({live:true});
   // Android resume and reconnect can arrive together. Share both requests.
   if (!options.force && crRoomMessageLoad?.roomId === currentRoom.id) return crRoomMessageLoad.promise;
   const roomId = currentRoom.id;
@@ -2945,10 +3138,10 @@ function msgHTML(m, nextMessage = null) {
           },
         )
       : '';
-    const contentHtml = pat ? `<span class="pat-text">${esc(m.content || '')}</span>` : snapshotHtml || (window.SystemNoticeUI
+    const contentHtml = window.AionRps?.inviteHTML(m) || (pat ? `<span class="pat-text">${esc(m.content || '')}</span>` : snapshotHtml || (window.SystemNoticeUI
       ? window.SystemNoticeUI.renderSystemNoticeContent(m.content, {escapeHtml: esc, attachments: m.attachments})
-      : `<span class="system-event-text">${esc(m.content || '')}</span>`);
-    return `<div class="system-event-msg${pat ? ' pat-notice' : ''}${loungeStatus ? ' lounge-visit-status-line' : ''}" data-msg-id="${msgId}" tabindex="0" onclick="this.focus()"${afterAttr}${beforeAttr}>
+      : `<span class="system-event-text">${esc(m.content || '')}</span>`));
+    return `<div class="system-event-msg${window.AionRps?.isUserInvite(m) ? ' rps-user-invite' : ''}${pat ? ' pat-notice' : ''}${loungeStatus ? ' lounge-visit-status-line' : ''}" data-msg-id="${msgId}" tabindex="0" onclick="this.focus()"${afterAttr}${beforeAttr}>
       <div class="system-event-line">
         <span class="system-notice-marker" aria-hidden="true">&gt;</span>
         ${contentHtml}
@@ -3393,6 +3586,7 @@ async function saveChatroomEdit(msgId) {
         whisper_mode: crWhisperMode,
       }),
     });
+    if (resp.ok) window.AionRps?.refresh();
     await consumeChatroomSSE(resp);
   } catch (err) {
     if (generation.stopped || err.name === 'AbortError') return;
@@ -3462,6 +3656,7 @@ document.addEventListener('click', (e) => {
 });
 
 function appendMessage(m) {
+  window.AionRps?.onInvite(m);
   crMessageRevision++;
   if (m?.id) crMessagesById[m.id] = m;
   // 移除空状态
@@ -3763,7 +3958,8 @@ composer.addEventListener('submit', async (e) => {
   e.preventDefault();
   if (_crControl.active) { _crControl.stop(); return; }
   if (!crRequireModels()) return;
-  const text = inputEl.value.trim();
+  const rpsRoundId = window.AionRps?.pendingRoundId() || '';
+  const text = inputEl.value.trim() || (rpsRoundId ? '来猜拳吧' : '');
   if (pendingAttachments.some(a => a.uploading)) { toast('图片或附件还在上传，请稍等'); return; }
   if ((!text && !pendingAttachments.length) || !currentRoom || isSending) return;
 
@@ -3787,7 +3983,7 @@ composer.addEventListener('submit', async (e) => {
     const resp = await _crControl.fetch(generation, `${API}/rooms/${currentRoom.id}/send`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content: text, model: chatroomModel, connor_model: chatroomConnorModel, attachments, tts_enabled: crTtsEnabled, tts_aion_voice: crTtsAionVoice, tts_connor_voice: crTtsConnorVoice, whisper_mode: crWhisperMode }),
+      body: JSON.stringify({ content: text, rps_round_id: rpsRoundId, model: chatroomModel, connor_model: chatroomConnorModel, attachments, tts_enabled: crTtsEnabled, tts_aion_voice: crTtsAionVoice, tts_connor_voice: crTtsConnorVoice, whisper_mode: crWhisperMode }),
     });
 
     await consumeChatroomSSE(resp);
@@ -4164,6 +4360,11 @@ async function openSettings() {
   crSettingsDirtyAt = 0;
   crSettingsLoadingRoomId = roomId;
   document.getElementById('settingsOverlay').classList.add('active');
+  crApplyIntimacyState({
+    enabled: crIntimacyEnabled(roomId),
+    state: crIntimacyEnabled(roomId) ? 'armed' : 'off',
+  });
+  crSyncIntimacy(roomId);
   const cached = crLoadSettingsSnapshot(roomId);
   crPopulateSettings(cached?.room || currentRoom, cached?.config || crCurrentSettingsConfig());
   crLoadTTSVoices(); // 音色慢也不阻塞主要设置。
@@ -5414,10 +5615,14 @@ function connectWS() {
       if (data.type === 'ambient_voice_listener' && data.data) {
         crAmbientApplyListenerState(data.data);
       }
+      if (data.type === 'rps_updated' && data.data) window.AionRps?.onUpdate(data.data);
 
       if (data.type === 'chatroom_msg_created' && currentRoom) {
         const msg = data.data;
         if (msg.room_id === currentRoom.id) {
+          if (document.getElementById('settingsOverlay')?.classList.contains('active')) {
+            crSyncIntimacy(currentRoom.id);
+          }
           if (msg.id && msg.sender) crRememberTTSMsgSender(msg.id, msg.sender);
           // 避免重复：流式回复本身已有 streaming 行；异步跟进消息即使还在发送中也要显示。
           const existing = document.getElementById(`streaming-${msg.id}`);
@@ -5505,6 +5710,7 @@ function connectWS() {
 
   ws.onclose = () => {
     if (crWs !== ws) return;
+    _ttsEngine.connectionLost();
     crWs = null;
     setTimeout(connectWS, 3000);
   };
@@ -6273,6 +6479,7 @@ function escWithTransfer(str) {
 
 /** 将文本中的 [[image:...]] 标记渲染为 <img>，[转账：N元] 渲染为卡片，其余部分转义 */
 function escWithImages(str) {
+  if (window.AionRps) str = window.AionRps.stripCommands(str);
   if (!str) return '';
   const imgRe = /\[\[image:(\S+?)\]\]/g;
   let result = '';
@@ -6704,6 +6911,7 @@ async function _crVoiceSend(audioBlob, duration) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         content: transcript || '',
+        rps_round_id: window.AionRps?.pendingRoundId() || '',
         model: chatroomModel,
         connor_model: chatroomConnorModel,
         attachments,

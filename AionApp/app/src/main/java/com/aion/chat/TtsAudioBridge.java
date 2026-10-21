@@ -25,6 +25,8 @@ public final class TtsAudioBridge {
     private final Map<String, LoudnessEnhancer> enhancers = new HashMap<>();
     private final Set<String> preparedPlayers = new HashSet<>();
     private final Map<String, Runnable> progressCallbacks = new HashMap<>();
+    private final Map<String, Object> playbackOwners = new HashMap<>();
+    private final Set<String> speechSessions = new HashSet<>();
 
     public TtsAudioBridge(Context context, WebView webView) {
         this.context = context.getApplicationContext();
@@ -61,6 +63,20 @@ public final class TtsAudioBridge {
     }
 
     @JavascriptInterface
+    public void beginSpeech(String playerId) {
+        if (validPlayerId(playerId)) webView.post(() -> speechSessions.add(playerId));
+    }
+
+    @JavascriptInterface
+    public void endSpeech(String playerId) {
+        if (!validPlayerId(playerId)) return;
+        webView.post(() -> {
+            speechSessions.remove(playerId);
+            if (!players.containsKey(playerId)) releasePlaybackOwner(playerId);
+        });
+    }
+
+    @JavascriptInterface
     public boolean play(String playerId, String playbackUrl) {
         if (!validPlayerId(playerId) || playbackUrl == null || playbackUrl.trim().isEmpty()) {
             return false;
@@ -85,8 +101,8 @@ public final class TtsAudioBridge {
             if (player == null || !preparedPlayers.contains(playerId)) return;
             stopProgress(playerId);
             try {
-                player.pause();
-                TtsPlaybackCoordinator.shared.release(player);
+                if (player.isPlaying()) player.pause();
+                releasePlaybackOwner(playerId);
                 emitPosition(playerId, "timeupdate", player);
             } catch (RuntimeException exception) {
                 finish(playerId, player, "error");
@@ -99,7 +115,7 @@ public final class TtsAudioBridge {
         webView.post(() -> {
             MediaPlayer player = players.get(playerId);
             if (player == null || !preparedPlayers.contains(playerId)) return;
-            TtsPlaybackCoordinator.shared.request(player, () -> {
+            TtsPlaybackCoordinator.shared.request(playbackOwner(playerId), () -> {
                 try {
                     player.start();
                     emit(playerId, "playing");
@@ -129,7 +145,10 @@ public final class TtsAudioBridge {
     @JavascriptInterface
     public void stop(String playerId) {
         if (!validPlayerId(playerId)) return;
-        webView.post(() -> releasePlayer(playerId));
+        webView.post(() -> {
+            speechSessions.remove(playerId);
+            releasePlayer(playerId);
+        });
     }
 
     public void shutdown() {
@@ -151,7 +170,7 @@ public final class TtsAudioBridge {
         MediaPlayer player = new MediaPlayer();
         players.put(playerId, player);
         if (autoPlay) {
-            TtsPlaybackCoordinator.shared.request(player,
+            TtsPlaybackCoordinator.shared.request(playbackOwner(playerId),
                     () -> preparePlayer(playerId, player, resolvedUrl, true));
         } else {
             preparePlayer(playerId, player, resolvedUrl, false);
@@ -256,12 +275,23 @@ public final class TtsAudioBridge {
         releaseLoudness(playerId);
         if (player != null) {
             player.release();
-            TtsPlaybackCoordinator.shared.release(player);
         }
+        if (!speechSessions.contains(playerId)) releasePlaybackOwner(playerId);
+    }
+
+    private Object playbackOwner(String playerId) {
+        return playbackOwners.computeIfAbsent(playerId, id -> new Object());
+    }
+
+    private void releasePlaybackOwner(String playerId) {
+        Object owner = playbackOwners.remove(playerId);
+        if (owner != null) TtsPlaybackCoordinator.shared.release(owner);
     }
 
     private void releaseAll() {
+        speechSessions.clear();
         for (String playerId : new HashSet<>(players.keySet())) releasePlayer(playerId);
+        for (String playerId : new HashSet<>(playbackOwners.keySet())) releasePlaybackOwner(playerId);
     }
 
     private void emit(String playerId, String type) {

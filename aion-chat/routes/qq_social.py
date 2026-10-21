@@ -10,7 +10,7 @@ import httpx
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 
-from qq_social_process import BASE, DIRECTORY
+from qq_social_process import BASE, DIRECTORY, WORKER_URL
 
 router = APIRouter(tags=['qq-social'])
 _credential_lock = asyncio.Lock()
@@ -24,12 +24,15 @@ def read_credentials():
 
 
 async def connect_saved_credentials():
-    from qq_social_process import ensure_started
+    from qq_social_process import ensure_started, reset_retries
     try:
+        reset_retries()
         await asyncio.to_thread(ensure_started)
+        headers = {'Authorization':'Bearer '+(DIRECTORY/'management.key').read_text(encoding='utf8').strip()}
         async with httpx.AsyncClient(timeout=5, trust_env=False) as client:
-            response = await client.post('http://127.0.0.1:8788/reload-credentials', headers={
-                'Authorization':'Bearer '+(DIRECTORY/'management.key').read_text(encoding='utf8').strip()})
+            response = await client.post(WORKER_URL+'/reload-credentials', headers=headers)
+            if response.is_success:
+                response = await client.post(WORKER_URL+'/reconnect', headers=headers)
         if response.status_code == 404:
             return 'restart_required'  # A worker from before page-based setup is still running.
         return 'connecting' if response.is_success else 'retry_required'
@@ -37,6 +40,17 @@ async def connect_saved_credentials():
         return 'connecting'  # The supervisor may still be starting the worker.
     except OSError:
         return 'retry_required'
+
+
+@router.post('/api/qq-social/connect')
+async def manual_connect(request: Request):
+    origin = request.headers.get('origin')
+    if origin and urlsplit(origin).netloc != request.headers.get('host'):
+        raise HTTPException(403, 'Invalid origin')
+    async with _credential_lock:
+        if not read_credentials() or not (DIRECTORY/'management.key').exists():
+            raise HTTPException(400, '请先配置 QQ 机器人')
+        return {'ok':True, 'connection':await connect_saved_credentials()}
 
 
 @router.get('/api/qq-social/credentials')
@@ -120,6 +134,46 @@ async def page():
     return FileResponse(BASE/'static/qq-social.html')
 
 
+@router.get('/api/qq-social/activity')
+async def activity_status():
+    from external_activity import settings
+    return await asyncio.to_thread(settings)
+
+
+@router.patch('/api/qq-social/activity')
+async def activity_switch(request:Request):
+    origin=request.headers.get('origin')
+    if origin and urlsplit(origin).netloc != request.headers.get('host'):
+        raise HTTPException(403,'Invalid origin')
+    from external_activity import configure
+    try:
+        body=await request.json()
+        if not isinstance(body,dict) or set(body)!={'enabled'}:
+            raise ValueError('invalid settings')
+        return await asyncio.to_thread(configure,body['enabled'])
+    except (ValueError,TypeError):
+        raise HTTPException(400,'近期互动开关值无效')
+
+
+@router.get('/api/qq-social/activity/summaries')
+async def activity_summaries():
+    from external_activity import settings, snapshot
+
+    def read():
+        cfg = settings()
+        actors = {}
+        for actor in ('aion', 'connor'):
+            rows = snapshot(actor)[0] if cfg['enabled'] else []
+            actors[actor] = [
+                {**{key: row[key] for key in ('platform', 'label', 'summary', 'updated_at')},
+                 'expires_at': min(row['updated_at'] + 3600, row['source_start'] + 7200)}
+                for row in rows
+            ]
+        return {'enabled': cfg['enabled'], 'actors': actors}
+
+    return JSONResponse(await asyncio.to_thread(read), headers={'Cache-Control': 'no-store'})
+
+
 @router.get('/api/external-memories')
 async def outside_memories():
     from external_memories import recent_memories
@@ -138,11 +192,15 @@ async def proxy(path:str,request:Request):
     key=DIRECTORY/'management.key'
     if not key.exists():
         return JSONResponse({'detail':'QQ尚未配置'},status_code=503)
+    if path == 'status' and (DIRECTORY/'connection.paused').exists():
+        return JSONResponse({'detail':'QQ连接已停止，请点击手动连接', 'retry_stopped':True},status_code=503)
     try:
         async with httpx.AsyncClient(timeout=15,trust_env=False) as client:
-            response=await client.request(request.method,'http://127.0.0.1:8788/'+path,
+            response=await client.request(request.method,WORKER_URL+'/'+path,
                 headers={'Authorization':'Bearer '+key.read_text(encoding='utf8').strip(),'Content-Type':'application/json'},
                 content=await request.body())
         return JSONResponse(response.json(),status_code=response.status_code)
     except (httpx.HTTPError,ValueError,OSError):
-        return JSONResponse({'detail':'QQ独立服务暂不可用，小家聊天不受影响'},status_code=503)
+        stopped = (DIRECTORY/'connection.paused').exists()
+        return JSONResponse({'detail':'QQ连接已停止，请点击手动连接' if stopped else 'QQ独立服务暂不可用，小家聊天不受影响',
+                             'retry_stopped':stopped},status_code=503)

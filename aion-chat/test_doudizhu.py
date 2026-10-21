@@ -1,6 +1,9 @@
 import copy
 import json
 import unittest
+import asyncio
+import sys
+from types import ModuleType
 from unittest.mock import AsyncMock, patch
 
 from routes import doudizhu as game
@@ -108,6 +111,39 @@ class DoudizhuStrategyTests(unittest.TestCase):
 
 
 class DoudizhuTurnTests(unittest.IsolatedAsyncioTestCase):
+    async def test_announcement_is_a_model_visible_system_card(self):
+        from context_builder import render_merged_timeline
+
+        state = table([], landlord="user")
+        state.update(phase="game_over", winner="aion", wallet_settlement={
+            "lines": ["测试用户 -6 元", "测试同伴 +3 元", "测试伙伴 +3 元"],
+        })
+        labels = {"user": "测试用户", "aion": "测试同伴", "connor": "测试伙伴"}
+        routes = ModuleType("routes.chatroom")
+        async def saved(room_id, sender, content, msg_id, attachments=None, **kwargs):
+            return dict(id=msg_id, room_id=room_id, sender=sender, content=content,
+                        created_at=1, attachments=attachments or [])
+        routes._save_msg = AsyncMock(side_effect=saved)
+        with patch.dict(sys.modules, {"routes.chatroom": routes}), \
+                patch.object(game, "_load_state", return_value=state), \
+                patch.object(game, "_player_names", return_value=labels), \
+                patch.object(game, "_latest_group_room_id", AsyncMock(return_value="family")), \
+                patch.object(game, "_trigger_group_replies", AsyncMock()) as replies:
+            result = await game.announce_result()
+            await asyncio.sleep(0)
+        self.assertTrue(result["ok"])
+        message = result["message"]
+        self.assertEqual(message["sender"], "system")
+        self.assertEqual(message["attachments"][0]["type"], "doudizhu_result")
+        self.assertIn({"type": "system_model_context"}, message["attachments"])
+        self.assertIn("农民方获胜", message["content"])
+        self.assertIn("测试伙伴", message["content"])
+        self.assertIn("测试用户 -6 元", message["content"])
+        for who in ("aion", "connor"):
+            rendered = render_merged_timeline([{**message, "source": "group"}], who)
+            self.assertTrue(any("斗地主战报" in item["content"] for item in rendered))
+        replies.assert_awaited_once_with("family")
+
     async def test_model_cannot_override_team_pass_but_speech_is_kept(self):
         state = table(["4S", "7S", "9S", "AS"], landlord="user", last=last_play("connor", ["3S"]))
         state["players"] = ["user", "connor", "aion"]

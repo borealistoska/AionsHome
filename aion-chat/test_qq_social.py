@@ -45,6 +45,33 @@ class QQStoreTests(unittest.TestCase):
         self.assertEqual(rows[0]['message_id'],'0')
         self.assertEqual(rows[-1]['message_id'],'59')
 
+    def test_repeated_memory_keeps_new_source_evidence(self):
+        import json
+        self.store.save_memory('aion','g1','u1','喜欢星空',['m1'])
+        self.store.save_memory('aion','g1','u1','喜欢星空',['m2'])
+        rows = self.store.memories('aion','g1')
+        self.assertEqual(len(rows),1)
+        self.assertEqual(json.loads(rows[0]['sources']),['m1','m2'])
+
+    def test_merge_preserves_originals_and_rejects_foreign_members(self):
+        import json
+        self.store.save_memory('aion','g1','u1','生日六月四日',['m1'])
+        old = self.store.memories('aion','g1')[0]
+        self.store.save_memory('aion','g1','u2','生日六月四日',['other'])
+        foreign = self.store.memories('aion','g1')[0]
+        with self.assertRaises(ValueError):
+            self.store.save_memory('aion','g1','u1','生日是六月四日，双子座',['m2'],merge_ids=[foreign['id']])
+        self.store.save_memory('aion','g1','u1','生日是六月四日，双子座',['m2'],merge_ids=[old['id']])
+        rows = self.store.memories('aion','g1')
+        merged = next(r for r in rows if r['member_id']=='u1')
+        self.assertEqual(len(rows),2)
+        self.assertEqual(set(json.loads(merged['sources'])),{'m1','m2'})
+        with self.store.db() as db:
+            original = dict(db.execute('SELECT * FROM memories WHERE id=?',(old['id'],)).fetchone())
+        self.assertEqual(original['content'],'生日六月四日')
+        self.assertEqual(json.loads(original['sources']),['m1'])
+        self.assertTrue(original['archive_reason'])
+
     def test_tunable_context_image_wait_and_interval_are_persisted(self):
         self.store.configure({'interval_seconds':15,'context_messages':70,'image_wait_seconds':90,'hourly_limit':45})
         cfg=self.store.settings()
@@ -399,6 +426,30 @@ class QQServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(remaining,90)
         self.assertLess(remaining,91)
 
+    async def test_digest_filters_temporary_facts_and_only_merges_offered_member_memories(self):
+        import json
+        from unittest.mock import AsyncMock, patch
+        from qq_social.context import summarize_group
+        group = self.store.discover('aion','g1')
+        self.store.save_memory('aion','g1','u1','生日六月四日',['old'])
+        own = self.store.memories('aion','g1')[0]['id']
+        self.store.save_memory('aion','g1','u2','喜欢星空',['other'])
+        foreign = self.store.memories('aion','g1')[0]['id']
+        rows = [dict(message_id='new',member_id='u1',name='朋友',content='六月四日生日，我先去吃饭',direction='in',is_bot=False)]
+        result = {'summary':'聊了生日，随后去吃饭','memories':[
+            {'member_id':'u1','content':'去吃饭了','sources':['new'],'lasting':False,'merge_ids':[]},
+            {'member_id':'u1','content':'生日是六月四日','sources':['new'],'lasting':True,'merge_ids':[own]},
+            {'member_id':'u1','content':'六月四日过生日','sources':['new'],'lasting':True,'merge_ids':[own]},
+            {'member_id':'u1','content':'喜欢星空','sources':['new'],'lasting':True,'merge_ids':[foreign]},
+            {'member_id':'u1','content':'未分类的信息','sources':['new']}]}
+        with patch('qq_social.context.home_config',return_value=({'aion_model':'model'},{'model':{}},{},{})), patch('qq_social.context.call_model',new=AsyncMock(return_value=json.dumps(result))) as model:
+            summary, memories = await summarize_group('aion',group,rows,self.store)
+        self.assertEqual(summary,'聊了生日，随后去吃饭')
+        self.assertEqual(memories,[('u1','生日是六月四日',['new'],[own])])
+        prompt = model.call_args.args[0][1]['content']
+        self.assertIn('生日六月四日',prompt)
+        self.assertNotIn('喜欢星空',prompt)
+
     async def test_group_context_uses_saved_message_count(self):
         from unittest.mock import AsyncMock, patch
         import time, json
@@ -406,14 +457,17 @@ class QQServiceTests(unittest.IsolatedAsyncioTestCase):
         self.store.configure({'context_messages':35,'bind_first_group':True})
         self.store.configure_actor('aion',{'context_messages':5})
         group=self.store.discover('aion','g1')
+        self.store.save_memory('aion','g1','u1','喜欢星空',['long-source-id-not-for-reply'])
         for n in range(9):
             self.store.record(dict(actor='aion',group_id='g1',message_id=str(n),member_id='u1',name='朋友',content='消息'+str(n),is_bot=False,direction='in',created_at=time.time()-10+n))
         event={'message_id':'original','member_id':'u2','content':'排队前的问题','created_at':time.time(),'attachments':[]}
         diag={}
-        with patch('qq_social.context.private_context',new=AsyncMock(return_value=('model',{'aion':'AI','user':'用户'},'private',{}))), patch('qq_social.context.call_model',new=AsyncMock(return_value='回复\n［带回小家记忆：一次有趣的讨论］')) as model:
+        with patch('qq_social.context.private_context',new=AsyncMock(return_value=('model',{'aion':'AI','user':'用户'},'private',{}))), patch('qq_social.context.call_model',new=AsyncMock(return_value=json.dumps({'reply':'回复','memory':'一次有趣的讨论','activity_summary':''}))) as model:
             reply = await generate_reply('aion',group,event,self.store,True,diag)
         self.assertEqual((reply.text,reply.memory),('回复','一次有趣的讨论'))
         self.assertEqual(diag['group_messages'],5)
+        social = json.loads(model.call_args.args[0][2]['content'].split('\n')[-1])
+        self.assertEqual(social,[{'member_id':'u1','name':'朋友','content':'喜欢星空'}])
         content=model.call_args.args[0][-1]['content']
         transcript=json.loads(content.split('\n')[1])
         self.assertEqual([row['text'] for row in transcript],['消息4','消息5','消息6','消息7','消息8'])
@@ -440,6 +494,10 @@ class QQServiceTests(unittest.IsolatedAsyncioTestCase):
                ('[保持安静]\n［带回小家记忆：一次见闻。］',False,'','','一次见闻。'),
                ('［回复消息：q3］\n收到点名。',True,'收到点名。','REFIDX_trigger','')]
         for raw,direct,text,reference,memory in cases:
+            from external_memories import split_memory_command
+            import json
+            public,remember=split_memory_command(raw)
+            raw=json.dumps({'reply':public,'memory':remember,'activity_summary':''})
             with self.subTest(raw=raw), patch('qq_social.context.private_context',new=AsyncMock(return_value=('model',{'aion':'AI','user':'用户'},'private',{}))), patch('qq_social.context.call_model',new=AsyncMock(return_value=raw)) as model:
                 result=await generate_reply('aion',group,event,self.store,direct,{})
                 self.assertEqual((result.text,result.reference_id,result.memory),(text,reference,memory))
@@ -605,6 +663,32 @@ class QQServiceTests(unittest.IsolatedAsyncioTestCase):
 
 
 class QQTransportTests(unittest.IsolatedAsyncioTestCase):
+    async def test_connection_stops_after_three_failures_without_another_timer(self):
+        import httpx
+        from unittest.mock import patch, AsyncMock
+        from qq_social.transport import BotTransport
+        attempts = []
+        def offline(request):
+            attempts.append(request.url.path)
+            raise httpx.ConnectError('offline', request=request)
+        bot = BotTransport({'app_id':'123','secret':'test'}, None)
+        await bot.client.aclose()
+        bot.client = httpx.AsyncClient(transport=httpx.MockTransport(offline))
+        sleep = AsyncMock()
+        # Bound the old infinite loop so the regression fails promptly.
+        sleep.side_effect = [None, None, asyncio.CancelledError()]
+        try:
+            with patch('qq_social.transport.asyncio.sleep', sleep):
+                try:
+                    await bot.run()
+                except asyncio.CancelledError:
+                    pass
+            self.assertTrue(bot.status.get('retry_stopped'))
+            self.assertEqual(len(attempts), 3)
+            self.assertEqual(sleep.await_count, 2)
+        finally:
+            await bot.close()
+
     async def test_official_token_and_group_reply_never_expose_secret(self):
         import httpx
         from qq_social.transport import BotTransport
@@ -645,6 +729,36 @@ class QQTransportTests(unittest.IsolatedAsyncioTestCase):
 
 
 class QQManagementTests(unittest.TestCase):
+    def test_stopped_connection_survives_worker_restart_until_manual_connect(self):
+        import json
+        from unittest.mock import patch
+        from fastapi.testclient import TestClient
+        from qq_social.worker import create_app
+        created = []
+        class FakeBot:
+            def __init__(self, credentials, event):
+                self.status = {'connected':False, 'state':'准备连接', 'retry_stopped':False}
+                created.append(self)
+            async def run(self):
+                await asyncio.Future()
+            async def close(self):
+                pass
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            (directory/'management.key').write_text('test-management')
+            (directory/'credentials.json').write_text(json.dumps({'aion':{'app_id':'123','secret':'test'}}))
+            (directory/'aion.paused').touch()
+            headers = {'authorization':'Bearer test-management'}
+            with patch('qq_social.worker.BotTransport', FakeBot), patch('qq_social.context.home_config', return_value=({}, {}, {}, {'aion':'甲','connor':'乙'})), TestClient(create_app(directory)) as client:
+                self.assertTrue(client.get('/status', headers=headers).json()['actors']['aion']['retry_stopped'])
+                self.assertEqual(client.post('/reconnect').status_code, 401)
+                self.assertEqual(client.post('/reconnect', headers=headers).status_code, 200)
+                self.assertFalse((directory/'aion.paused').exists())
+                self.assertFalse(client.get('/status', headers=headers).json()['actors']['aion']['retry_stopped'])
+                count = len(created)
+                client.post('/reconnect', headers=headers)
+                self.assertEqual(len(created), count, 'Do not duplicate an active connection')
+
     def test_actor_settings_api_changes_only_selected_actor(self):
         from unittest.mock import patch
         from fastapi.testclient import TestClient
@@ -820,6 +934,88 @@ class QQCredentialSetupTests(unittest.TestCase):
                 with self.assertRaises(asyncio.CancelledError):
                     await service.digest_groups()
         asyncio.run(exercise())
+
+
+class QQSupervisorTests(unittest.TestCase):
+    def test_restart_can_recover_when_only_home_is_running(self):
+        result = self.run_restart_script(worker=False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('STARTED_HOME', result.stdout)
+
+    def test_restart_does_not_wait_for_busy_or_unresponsive_worker(self):
+        for unavailable in (False, True):
+            with self.subTest(unavailable=unavailable):
+                result = self.run_restart_script(worker=True, unavailable=unavailable)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn('STOPPED_PROCESS', result.stdout)
+                self.assertIn('STARTED_HOME', result.stdout)
+
+    def test_restart_starts_home_when_both_services_are_stopped(self):
+        result = self.run_restart_script(worker=False, home=False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn('STOPPED_PROCESS', result.stdout)
+        self.assertIn('STARTED_HOME', result.stdout)
+
+    def run_restart_script(self, worker, home=True, unavailable=False):
+        import os
+        import subprocess
+        if os.name != 'nt':
+            self.skipTest('Windows restart helper')
+        # Run the real script, replacing only OS/network effects. Never stop live services.
+        root = str(Path(__file__).resolve().parents[1]).replace("'", "''")
+        harness = r'''
+$ErrorActionPreference = 'Stop'
+function Get-NetTCPConnection {
+    param($LocalPort, $State, $ErrorAction)
+    if (($homeRunning -and $LocalPort -eq 8080) -or ($worker -and $LocalPort -eq 18788)) {
+        [pscustomobject]@{ OwningProcess = $LocalPort }
+    }
+}
+function Get-CimInstance {
+    param($ClassName, $Filter)
+    $id = [int]($Filter -replace 'ProcessId=', '')
+    $command = if ($id -eq 8080) { 'main.py' } else { '-m qq_social.worker' }
+    [pscustomobject]@{ ProcessId = $id; CommandLine = "$root $command" }
+}
+function Invoke-RestMethod {
+    param($Uri, $TimeoutSec, $Headers)
+    if (-not $script:started) {
+        if (-not $worker -or $unavailable) { throw 'QQ worker unavailable (503)' }
+        return @{ pending = 1 }
+    }
+    return @{ settings = @{ bring_home = $true } }
+}
+function Stop-Process { param($Id) Write-Output 'STOPPED_PROCESS' }
+function Start-Process { $script:started = $true; Write-Output 'STARTED_HOME' }
+function Start-Sleep {}
+function Get-Content { param($LiteralPath, [switch]$Raw) return 'test-management' }
+function Test-Path { param($LiteralPath) return $false }
+& "$root\aion-chat\restart-home-qq.ps1"
+'''
+        harness = (f"$root = '{root}'\n$worker = ${str(worker).lower()}\n"
+                   f"$homeRunning = ${str(home).lower()}\n$unavailable = ${str(unavailable).lower()}\n" + harness)
+        return subprocess.run(['powershell.exe', '-NoProfile', '-Command', harness],
+                              capture_output=True, text=True, errors='replace', timeout=20)
+
+    def test_failed_starts_are_bounded_and_manual_reset_releases_persistent_pause(self):
+        from unittest.mock import patch
+        import qq_social_process as process
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            (directory/'credentials.json').write_text('{}')
+            (directory/'management.key').write_text('test')
+            with patch.object(process, 'DIRECTORY', directory), patch.object(process, '_last_start', 0), patch.object(process, '_start_attempts', 0, create=True), patch.object(process, 'reachable', return_value=False) as reachable, patch.object(process.time, 'monotonic', side_effect=[100,100,121,121,142,142,163,163,184,184,205,205,226,226]), patch.object(process.subprocess, 'Popen') as spawn:
+                for _ in range(6):
+                    process.ensure_started()
+                self.assertEqual(spawn.call_count, 3)
+                self.assertTrue((directory/'connection.paused').exists())
+                checked = reachable.call_count
+                process.ensure_started()
+                self.assertEqual(reachable.call_count, checked, 'Stopped means no more connection probes')
+                process.reset_retries()
+                self.assertFalse((directory/'connection.paused').exists())
+                process.ensure_started()
+                self.assertEqual(spawn.call_count, 4)
 
 
 if __name__ == '__main__':

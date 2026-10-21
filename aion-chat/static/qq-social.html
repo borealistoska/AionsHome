@@ -4,6 +4,7 @@
 <body><main>
 <header><a href="/">← 小家</a></header>
 <section class="intro"><h1>QQ 群聊</h1><button id="power" class="power" disabled>连接中…</button></section>
+<div class="row"><button id="connect" type="button">手动连接</button><span class="hint">连续失败 3 次后停止，点击才重新尝试。</span></div>
 <p id="notice" role="status" aria-live="polite"></p>
 <section class="card"><details id="credentialPanel"><summary>机器人接入 <span id="credentialCount">读取中…</span></summary>
 <p class="hint">填入 QQ 开放平台的 AppID 和 AppSecret，每位单独保存，也可以只接入一位。凭据仅保存在这台小家的本地数据中。</p>
@@ -12,7 +13,7 @@
 <p class="hint">首次保存后，打开总开关，在目标群 @ 机器人完成配对。已保存的密钥不回显；AppID 不变时留空可保留原密钥。更换凭据会取消 QQ 待发送的回复。</p>
 </details></section>
 <div id="actors" class="actors"></div>
-<section class="card mode-card"><div class="row"><h2 id="settingsTitle">回复设置</h2><span id="modeLabel" class="muted">连接中…</span></div>
+<section class="card mode-card"><div class="row"><h2 id="settingsTitle">回复设置</h2><span id="modeLabel" class="muted">读取中…</span></div>
 <div id="actorTabs" class="actor-tabs" role="group" aria-label="选择要配置的 AI"></div>
 <div id="modeControls" class="modes" role="group" aria-label="回复方式"><button type="button" data-mode="respond" aria-pressed="false" disabled>仅 @ 回复</button><button type="button" data-mode="natural" aria-pressed="false" disabled>主动接话</button></div>
 <p id="modeHint" class="hint">选择后立即生效</p>
@@ -23,7 +24,9 @@
 <details><summary>怎么调</summary><p class="hint">只调整当前选中的 AI，不影响另一位。快捷值只调整间隔和主动发言上限，保存后生效。上下文越多，单次用量也越多；次数上限按每位 AI、每个群计算。主动接话需 QQ 开启「接收所有消息」。保存设置会取消这位 AI 尚未完成的旧回复。关闭角色的「参与群聊」后，@ 回复、主动判断和 QQ 后台记忆整理一起暂停。</p></details>
 <button type="submit" class="save-settings">保存参数</button></form></details></section>
 <section class="card"><h2>已连接的群</h2><div id="groups"></div></section>
-<section class="card"><details id="outsidePanel"><summary>外面的回忆</summary><div class="switches"><label><input id="bringHome" type="checkbox"> 把 QQ 回忆带回小家</label></div><p class="hint">他们自己挑选值得留下的经历，分别存进朋友记忆。小家会参考最近回忆，不自动往聊天窗口发消息。</p><div id="outsideMemories"></div></details></section>
+<section class="card"><details id="outsidePanel"><summary>外面的回忆</summary><div class="switches"><label><input id="activitySync" type="checkbox" disabled> 小家同步近期互动</label></div><p id="activityHint" class="hint">正在读取近期互动设置…</p>
+<details id="activitySummaryPanel"><summary>查看近期摘要 <span id="activitySummaryCount"></span></summary><p class="hint">只显示当前有效的缓存；小家会按时间缩短后参考。</p><div id="activitySummaries"><p class="muted">正在读取…</p></div></details>
+<div class="switches"><label><input id="bringHome" type="checkbox"> 把 QQ 回忆带回小家</label></div><p class="hint">他们自己挑选值得留下的经历，分别存进朋友记忆。小家会参考最近回忆，不自动往聊天窗口发消息。</p><div id="outsideMemories"></div></details></section>
 <section id="detail" class="card" hidden><h2 id="detailTitle">群里的聊天</h2><details><summary>群成员 <span id="memberCount"></span></summary><div id="members"></div></details><details><summary>近期话题</summary><div id="summary" class="hint"></div></details><details><summary>交往记忆 <span id="memoryCount"></span></summary><div id="memories"></div></details><details><summary>最近对话 <span id="messageCount"></span></summary><div id="messages"></div></details></section>
 <footer><details><summary>开关与记忆说明</summary><p>总开关控制全部 AI，各角色的「参与群聊」单独控制本人。关闭后不保存该角色收到的新聊天、不生成回复，也暂停其 QQ 后台记忆整理；重开不补发。已提交给 QQ 的消息无法靠开关撤回。群记录独立保存；开启「带回小家」后，只把他们选中的回忆带入各自的朋友记忆。关闭带回开关不删除已有记忆。识别为 AI 的连续互聊最多 3 轮。</p></details></footer>
 </main><script src="/static/qq-social.js"></script></body></html>

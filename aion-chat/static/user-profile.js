@@ -274,6 +274,10 @@ connectCommonWS(message => {
   if (message.type === 'user_profile_changed' || message.type === 'capability_config_changed') loadProfile({background:true});
 });
 profileEl('previewButton')?.addEventListener('click', () => loadProfile({background:true}));
+profileEl('previewEnd').addEventListener('click', () => {
+  const preview = profileEl('promptPreview');
+  preview.scrollTop = preview.scrollHeight;
+});
 profileEl('initializeProfile').addEventListener('click', async event => {
   event.target.disabled = true;
   try {

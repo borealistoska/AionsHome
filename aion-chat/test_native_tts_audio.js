@@ -85,6 +85,34 @@ function testBrowserFallback() {
   assert.strictEqual(root.createAionTtsAudio().kind, 'html');
 }
 
+async function testMessageOwnershipSurvivesChunkCompletionAndStopsInAGap() {
+  const calls = [];
+  const listeners = {};
+  const root = createRoot({
+    play() { return true; }, stop(id) { calls.push(['stop', id]); },
+    beginSpeech(id) { calls.push(['begin', id]); },
+    endSpeech(id) { calls.push(['end', id]); },
+  });
+  root.addEventListener = (name, callback) => { listeners[name] = callback; };
+  installAionTtsAudio(root);
+  const audio = root.createAionTtsAudio();
+  audio.beginSpeech();
+  audio.src = '/first';
+  await audio.play();
+  root.onAionNativeTtsEvent({ playerId: audio.playerId, type: 'ended' });
+  assert.deepStrictEqual(calls, [['begin', audio.playerId]]);
+  audio.beginSpeech();
+  audio.pause(); // Stopping between chunks still has to release the message's turn.
+  audio.endSpeech();
+  assert.deepStrictEqual(calls, [['begin', audio.playerId], ['end', audio.playerId]]);
+  audio.beginSpeech();
+  audio.src = '/last';
+  await audio.play();
+  listeners.pagehide();
+  assert.deepStrictEqual(calls.slice(-2), [['begin', audio.playerId], ['end', audio.playerId]]);
+  assert.equal(audio.paused, false, 'navigation lets the current native clip finish');
+}
+
 function testNativeEventsReachEmbeddedChatroom() {
   const bridge = { play() { return true; }, stop() {} };
   const child = createRoot(bridge);
@@ -168,6 +196,7 @@ Promise.resolve()
   .then(testNativePlaybackAndEvents)
   .then(testNativeStopIsScopedToPlayer)
   .then(testBrowserFallback)
+  .then(testMessageOwnershipSurvivesChunkCompletionAndStopsInAGap)
   .then(testNativeEventsReachEmbeddedChatroom)
   .then(testTheaterPlaybackControls)
   .then(testTheaterPauseDuringLoadingAndFallback)

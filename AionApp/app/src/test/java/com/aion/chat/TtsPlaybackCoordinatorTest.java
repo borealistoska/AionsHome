@@ -7,6 +7,21 @@ import java.util.List;
 import static org.junit.Assert.*;
 
 public class TtsPlaybackCoordinatorTest {
+    @Test public void messageContinuesAcrossChunksBeforeReturningToTheater() {
+        TtsPlaybackCoordinator coordinator = new TtsPlaybackCoordinator();
+        Object theater = new Object(), message = new Object();
+        List<String> started = new ArrayList<>();
+        coordinator.request(theater, () -> started.add("theater-0"));
+        coordinator.request(message, () -> started.add("message-0"));
+        coordinator.release(theater);
+        coordinator.request(theater, () -> started.add("theater-1"));
+        // The message keeps ownership even while its next chunk is being synthesized.
+        coordinator.request(message, () -> started.add("message-1"));
+        assertEquals(Arrays.asList("theater-0", "message-0", "message-1"), started);
+        coordinator.release(message);
+        assertEquals(Arrays.asList("theater-0", "message-0", "message-1", "theater-1"), started);
+    }
+
     @Test public void backgroundWakeupWaitsForForegroundSpeechAndReturnAlsoWaits() {
         TtsPlaybackCoordinator coordinator = new TtsPlaybackCoordinator();
         Object foreground = new Object(), background = new Object(), returned = new Object();

@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import tempfile
@@ -67,7 +68,9 @@ class ChatroomActiveMemoryCommandTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("开斯婷", triggered["memory_search"]["requests"][0].query)
         self.assertEqual("上一次吃药是什么时候？", triggered["memory_search"]["original_question"])
         self.assertEqual("system-memory-search", triggered["memory_search"]["system_msg_id"])
-        save_status.assert_awaited_once_with("room-1", "星野正在翻找记忆……", queue)
+        save_status.assert_awaited_once_with(
+            "room-1", "星野正在翻找记忆……", queue, after_msg_id=None
+        )
 
     async def test_natural_preface_is_returned_for_normal_message_persistence(self):
         queue = __import__("asyncio").Queue()
@@ -84,6 +87,45 @@ class ChatroomActiveMemoryCommandTest(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual("等我去翻翻。", clean)
         self.assertIn("memory_search", triggered)
+
+    async def test_search_status_stays_after_preface_when_saved_before_it(self):
+        queue = __import__("asyncio").Queue()
+        broadcast = AsyncMock()
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "chatroom-order.db")
+            async with aiosqlite.connect(db_path) as db:
+                await db.execute(
+                    "CREATE TABLE chatroom_messages (id TEXT, room_id TEXT, sender TEXT, content TEXT, created_at REAL, attachments TEXT)"
+                )
+                await db.commit()
+
+            with (
+                patch.object(chatroom, "get_db", side_effect=lambda: aiosqlite.connect(db_path)),
+                patch.object(chatroom, "broadcast_synced", broadcast),
+                patch.object(chatroom, "is_capability_enabled", return_value=True),
+                patch.object(chatroom, "_name_for_identity", return_value="星野"),
+            ):
+                clean, triggered = await chatroom._process_chatroom_commands(
+                    "等我去翻翻。【MEMORY_SEARCH：辣椒炒肉|latest】",
+                    "room-1", "aion", "preface-message", queue,
+                    user_text="上一次是什么时候？",
+                )
+                await chatroom._complete_chatroom_memory_search_status(
+                    "room-1", triggered["memory_search"]["system_msg_id"], "aion"
+                )
+
+            self.assertEqual("等我去翻翻。", clean)
+            order = {"type": "system_notice_order", "after_msg_id": "preface-message"}
+            queued = await queue.get()
+            self.assertIn(order, queued["message"]["attachments"])
+            for event in broadcast.await_args_list:
+                self.assertIn(order, event.args[1]["data"]["attachments"])
+            async with aiosqlite.connect(db_path) as db:
+                row = await (await db.execute(
+                    "SELECT content, attachments FROM chatroom_messages"
+                )).fetchone()
+            self.assertEqual("星野翻找了记忆", row[0])
+            self.assertIn(order, json.loads(row[1]))
 
     async def test_followup_dispatch_does_not_depend_on_preface_text(self):
         scheduled = []

@@ -86,6 +86,10 @@ public final class MiBandRuntime implements MiBandGattSession.Listener {
             throw new IllegalArgumentException("蓝牙地址格式不正确");
         }
         MiBandPreferences.decodeAuthKey(keyHex);
+        boolean connectionChanged = !normalizedAddress.equalsIgnoreCase(
+                preferences.getString(MiBandPreferences.KEY_ADDRESS, ""))
+                || !keyHex.trim().equalsIgnoreCase(
+                preferences.getString(MiBandPreferences.KEY_AUTH, ""));
         preferences.edit()
                 .putString(MiBandPreferences.KEY_ADDRESS, normalizedAddress)
                 .putString(MiBandPreferences.KEY_NAME, name == null ? "" : name.trim())
@@ -95,6 +99,7 @@ public final class MiBandRuntime implements MiBandGattSession.Listener {
                 .putInt(MiBandPreferences.KEY_NIGHT_END, settings.nightEndMinute)
                 .putInt(MiBandPreferences.KEY_NIGHT_INTERVAL, settings.nightIntervalMinutes)
                 .apply();
+        if (connectionChanged && (session.isConnected() || connectionQueued.get())) manualReconnect();
         publish();
     }
 
@@ -227,10 +232,21 @@ public final class MiBandRuntime implements MiBandGattSession.Listener {
     public void disconnect() {
         manualDisconnect = true;
         cancelReconnect(false);
+        releaseConnection();
+    }
+
+    public void releaseForServiceStop() {
+        // Service recreation must not turn cleanup into a user-requested disconnect.
+        cancelReconnect(false);
+        releaseConnection();
+    }
+
+    private void releaseConnection() {
         operationExecutor.execute(() -> {
             session.close();
             state = "disconnected";
             error = "";
+            syncing = false;
             publish();
         });
     }

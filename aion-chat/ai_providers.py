@@ -8,6 +8,7 @@ from contextlib import nullcontext
 from pathlib import Path
 
 from generation_control import own_stream, own_process
+from system_logs import logged_ai_call
 
 import httpx
 import tempfile
@@ -25,6 +26,9 @@ from stream_safety import StreamActivity
 # CLI 状态前缀：yield 此前缀的 chunk 会被 _bg_generate 拦截为状态事件，不送入 TTS 和正文
 CLI_STATUS_PREFIX = "\x00CLI_STATUS:"
 _ANTIGRAVITY_DEFAULT_PRINT_TIMEOUT = "10m"
+# Let agy's own 10m deadline (+30s transport cleanup) report first. Its
+# upstream can stay idle for 5m before retrying; a 5m app cutoff races it.
+_ANTIGRAVITY_CHAT_IDLE_TIMEOUT = 660.0
 _ANTIGRAVITY_PRINT_TIMEOUT_RE = re.compile(r"\d+(?:ms|s|m|h)?")
 MODEL_RAW_RESPONSE_DIR = DATA_DIR / "model_raw_responses"
 MODEL_RAW_RESPONSE_RETENTION_SECONDS = 3 * 24 * 60 * 60
@@ -168,6 +172,14 @@ def _antigravity_print_timeout(meta: dict | None) -> str:
     if value and _ANTIGRAVITY_PRINT_TIMEOUT_RE.fullmatch(value):
         return value
     return _ANTIGRAVITY_DEFAULT_PRINT_TIMEOUT
+
+
+def model_chat_idle_timeout(model_key: str) -> float | None:
+    """Override only AGY's chat idle deadline; keep the shared total limit."""
+    if not model_key:
+        return None
+    cfg = MODELS.get(resolve_model_key(model_key), {})
+    return _ANTIGRAVITY_CHAT_IDLE_TIMEOUT if cfg.get('provider') == 'antigravity_cli' else None
 
 
 def _strip_gemini_cli_noise(text: str) -> str:
@@ -490,7 +502,9 @@ def build_gemini_contents(history: list, *, include_audio: bool = False):
 
 
 # ── 硅基流动 ──────────────────────────────────────
+@logged_ai_call("siliconflow")
 async def call_siliconflow(messages: list, model: str, meta: dict | None = None, temperature: float | None = None, max_tokens: int | None = None):
+    normal_stop_seen = False
     url = "https://api.siliconflow.cn/v1/chat/completions"
     headers = {"Authorization": f"Bearer {get_key('siliconflow')}", "Content-Type": "application/json"}
     api_messages = build_multimodal_messages(messages)
@@ -524,12 +538,18 @@ async def call_siliconflow(messages: list, model: str, meta: dict | None = None,
                             meta["completion_tokens"] = u.get("completion_tokens", 0)
                             meta["total_tokens"] = u.get("total_tokens", 0)
                             meta["raw"] = u  # 保留原始 usage 数据
-                        delta = chunk["choices"][0].get("delta", {}) if chunk.get("choices") else {}
+                        choice = chunk["choices"][0] if chunk.get("choices") else {}
+                        normal_stop_seen = normal_stop_seen or choice.get("finish_reason") == "stop"
+                        delta = choice.get("delta", {})
                         reasoning = delta.get("reasoning_content") or delta.get("reasoning")
                         if meta is not None and reasoning:
                             meta["reasoning_content"] = meta.get("reasoning_content", "") + str(reasoning)
+                        if reasoning:
+                            yield StreamActivity()
                         if "content" in delta and delta["content"]:
                             yield delta["content"]
+                        if normal_stop_seen and isinstance(chunk.get("usage"), dict) and chunk["usage"]:
+                            return
                     except:
                         pass
 
@@ -543,7 +563,9 @@ GEMINI_SAFETY_SETTINGS = [
 ]
 
 # ── Gemini ────────────────────────────────────────
+@logged_ai_call("gemini")
 async def call_gemini(messages: list, model: str, meta: dict | None = None, temperature: float | None = None, max_tokens: int | None = None, include_audio: bool = False):
+    normal_stop_seen = False
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?alt=sse&key={get_key('gemini')}"
     contents = build_gemini_contents(messages, include_audio=include_audio)
     payload = {"contents": contents, "safetySettings": GEMINI_SAFETY_SETTINGS}
@@ -575,7 +597,9 @@ async def call_gemini(messages: list, model: str, meta: dict | None = None, temp
                             meta["completion_tokens"] = u.get("candidatesTokenCount", 0)
                             meta["total_tokens"] = u.get("totalTokenCount", 0)
                             meta["raw"] = u  # 保留原始 usageMetadata 数据
-                        parts = chunk.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+                        candidate = (chunk.get("candidates") or [{}])[0]
+                        normal_stop_seen = normal_stop_seen or candidate.get("finishReason") == "STOP"
+                        parts = candidate.get("content", {}).get("parts", [])
                         for part in parts:
                             text = part.get("text", "") if isinstance(part, dict) else ""
                             if not text:
@@ -583,13 +607,18 @@ async def call_gemini(messages: list, model: str, meta: dict | None = None, temp
                             if part.get("thought"):
                                 if meta is not None:
                                     meta["reasoning_content"] = meta.get("reasoning_content", "") + text
+                                yield StreamActivity()
                             else:
                                 yield text
+                        if normal_stop_seen and isinstance(chunk.get("usageMetadata"), dict) and chunk["usageMetadata"]:
+                            return
                     except:
                         pass
 
 # ── AiPro 中转站  ────────────────────────────────────────https://vip.aipro.love
+@logged_ai_call("aipro")
 async def call_aipro(messages: list, model: str, meta: dict | None = None, temperature: float | None = None, max_tokens: int | None = None):
+    normal_stop_seen = False
     url = "https://shufulei.net/v1/chat/completions"	
     headers = {"Authorization": f"Bearer {get_key('aipro')}", "Content-Type": "application/json"}
     api_messages = build_multimodal_messages(messages)
@@ -624,12 +653,18 @@ async def call_aipro(messages: list, model: str, meta: dict | None = None, tempe
                         meta["completion_tokens"] = u.get("completion_tokens", 0)
                         meta["total_tokens"] = u.get("total_tokens", 0)
                         meta["raw"] = u
-                    delta = chunk["choices"][0].get("delta", {}) if chunk.get("choices") else {}
+                    choice = chunk["choices"][0] if chunk.get("choices") else {}
+                    normal_stop_seen = normal_stop_seen or choice.get("finish_reason") == "stop"
+                    delta = choice.get("delta", {})
                     reasoning = delta.get("reasoning_content") or delta.get("reasoning")
                     if meta is not None and reasoning:
                         meta["reasoning_content"] = meta.get("reasoning_content", "") + str(reasoning)
+                    if reasoning:
+                        yield StreamActivity()
                     if "content" in delta and delta["content"]:
                         yield delta["content"]
+                    if normal_stop_seen and isinstance(chunk.get("usage"), dict) and chunk["usage"]:
+                        return
                 except:
                     pass
 
@@ -646,7 +681,9 @@ def _openai_chat_completions_url(base_url: str) -> str:
 
 
 # ── 自定义 OpenAI 兼容中转站 ─────────────────────────
+@logged_ai_call("custom_openai")
 async def call_custom_openai(messages: list, cfg: dict, meta: dict | None = None, temperature: float | None = None, max_tokens: int | None = None, request_timeout: float = 120):
+    normal_stop_seen = False
     model = (cfg.get("model") or "").strip()
     url = _openai_chat_completions_url(cfg.get("base_url", ""))
     if not url or not model:
@@ -699,7 +736,9 @@ async def call_custom_openai(messages: list, cfg: dict, meta: dict | None = None
                             meta["completion_tokens"] = u.get("completion_tokens", 0)
                             meta["total_tokens"] = u.get("total_tokens", 0)
                             meta["raw"] = u
-                        delta = chunk["choices"][0].get("delta", {}) if chunk.get("choices") else {}
+                        choice = chunk["choices"][0] if chunk.get("choices") else {}
+                        normal_stop_seen = normal_stop_seen or choice.get("finish_reason") == "stop"
+                        delta = choice.get("delta", {})
                         reasoning = delta.get("reasoning_content") or delta.get("reasoning")
                         if reasoning:
                             if meta is not None:
@@ -712,6 +751,10 @@ async def call_custom_openai(messages: list, cfg: dict, meta: dict | None = None
                         if delta.get("content"):
                             content_started = True
                             yield delta["content"]
+                        # Only current, nonempty usage after a normal stop is final.
+                        # Keep the last delta and usage before closing a held-open SSE.
+                        if normal_stop_seen and isinstance(chunk.get("usage"), dict) and chunk["usage"]:
+                            return
                     except Exception:
                         pass
     except httpx.TimeoutException:
@@ -956,6 +999,7 @@ _CLI_TOOL_LABELS = {
     "shell":             "⚙️ 执行命令",
 }
 
+@logged_ai_call("gemini_cli")
 async def call_gemini_cli(messages: list, model: str, meta: dict | None = None,
                           temperature: float | None = None, max_tokens: int | None = None):
     """通过 gemini CLI 子进程流式获取响应（stream-json 模式，支持 token 统计）"""
@@ -1111,18 +1155,28 @@ async def call_gemini_cli(messages: list, model: str, meta: dict | None = None,
 
 # ── Antigravity CLI ───────────────────────────────
 
+@logged_ai_call("antigravity_cli")
 async def call_antigravity_cli(messages: list, model: str, meta: dict | None = None,
                                temperature: float | None = None, max_tokens: int | None = None):
-    """Use the official stdin/stdout stream with a tool-free companion agent."""
+    """Use the official stream; image turns get an image-reading companion agent."""
     binary = _find_antigravity_binary()
     if not binary:
         yield "[AntigravityCLI错误] 未找到 agy CLI，请先安装官方 Antigravity CLI"
         return
-    prompt = _build_cli_prompt(messages, include_image_refs=False)
+    image_paths = _collect_cli_image_paths(messages)
+    image_numbers = {path: index for index, path in enumerate(image_paths, 1)}
+    prompt_messages = []
+    for message in messages:
+        paths = _collect_cli_image_paths([message])
+        if paths:
+            labels = "、".join(f"图片{image_numbers[path]}" for path in paths)
+            message = {**message, "content": (message.get("content") or "") + f"\n（图片附件：{labels}）"}
+        prompt_messages.append(message)
+    prompt = _build_cli_prompt(prompt_messages, include_image_refs=False)
     yield f"{CLI_STATUS_PREFIX}正在回复🚀…"
     try:
         async for event in antigravity_cli.stream_chat(
-            binary, prompt, model, timeout=_antigravity_print_timeout(meta),
+            binary, prompt, model, timeout=_antigravity_print_timeout(meta), image_paths=image_paths,
         ):
             if event["kind"] == "text":
                 yield event["text"]
@@ -1441,6 +1495,7 @@ def _apply_codex_usage_meta(meta: dict | None, usage: dict | None) -> None:
     meta["raw"] = raw
 
 
+@logged_ai_call("codex_cli")
 async def call_codex_cli(messages: list, model: str, meta: dict | None = None,
                          temperature: float | None = None, max_tokens: int | None = None):
     """通过请求级 Codex App Server 会话增量返回正文与可读推理摘要。"""
@@ -1497,6 +1552,7 @@ async def call_codex_cli(messages: list, model: str, meta: dict | None = None,
         yield f"[CodexCLI错误] {e}"
 
 
+@logged_ai_call("codex_sentinel")
 async def call_codex_sentinel(
     prompt: str,
     *,
@@ -1848,6 +1904,9 @@ async def stream_ai(messages: list, model_key: str, meta: dict | None = None, te
         visible = think_filter.feed(chunk)
         if visible:
             yield visible
+        elif chunk:
+            # A real content chunk can be entirely hidden inside <think> tags.
+            yield StreamActivity()
 
     tail = think_filter.flush()
     if tail and not (cancel_event and cancel_event.is_set()):

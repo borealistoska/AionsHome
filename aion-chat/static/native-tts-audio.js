@@ -39,7 +39,21 @@
         return Promise.resolve();
       }
 
+      // A chat message keeps its turn across clips and synthesis gaps.
+      beginSpeech() {
+        if (this._speechActive) return;
+        this._speechActive = true;
+        this.bridge.beginSpeech?.(this.playerId);
+      }
+
+      endSpeech() {
+        if (!this._speechActive) return;
+        this._speechActive = false;
+        this.bridge.endSpeech?.(this.playerId);
+      }
+
       pause() {
+        this.endSpeech();
         if (this.paused) return;
         this.bridge.stop(this.playerId);
         this.paused = true;
@@ -158,6 +172,11 @@
         super._onNativeEvent(type);
       }
     }
+
+    // Navigation can discard the JS queue before its final native callback arrives.
+    root.addEventListener?.('pagehide', () => {
+      for (const player of players.values()) player.endSpeech();
+    });
 
     root.onAionNativeTtsEvent = event => {
       if (!event || !event.playerId) return;

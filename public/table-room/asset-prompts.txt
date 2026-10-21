@@ -1,0 +1,9 @@
+Current scene: lounge-v1.png was replaced by the user on 2026-10-20 with artwork containing its own green table. The UI now aligns directly to that table. felt-v1.png is retained but no longer displayed. The prompts below document the earlier generated assets.
+
+Generated with the built-in image_gen tool, 2026-10-20. Decorative assets only; portraits use existing user and companion avatar files.
+
+lounge-v1.png
+Use case: stylized-concept. Asset type: production background image for a mobile private poker and liar's dice game. Create a premium cinematic photorealistic black and antique gold private games lounge, portrait 2:3 composition. Dark walnut shelves in soft focus across the top, a warm amber lamp near upper left, subtle brass details and a crystal whiskey glass on the extreme right edge. The central 75 percent and bottom area must be very dark quiet nearly black walnut/leather negative space, so interactive player panels and a separate green poker table will be placed over it. Moody warm illumination, rich realistic material detail, restrained luxurious atmosphere, sharp edge accents only. No people, no portraits, no animals, no characters, no playing cards, no dice, no table in the center, no UI, no lettering, no logos, no watermark. This is a decorative environment background, not a screenshot or mockup.
+
+felt-v1.png
+Use case: photorealistic-natural. Asset type: production material texture for the center of an interactive green poker table. Create a landscape 3:2 full-bleed straight overhead macro photograph of premium deep emerald green wool billiards felt. Fine very subtle dense matte fibers, warm soft light centered, slightly darker edges. Uniform forest green, tactile and elegant, no teal or blue tint. Texture should be quiet at mobile size and never compete with playing cards placed on it. No objects, no table rim, no seams, no shapes, no lines, no stripes, no text, no logo, no watermark. Entire canvas is green fabric.

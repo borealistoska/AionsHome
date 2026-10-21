@@ -60,11 +60,15 @@ def result_card(game, result, labels):
 
 
 async def save_result_card(game, result, target, labels):
+    content, attachments = result_card(game, result, labels)
+    return await save_chat_card(f"pool_result_{game['id']}_{result['rack']}", content, attachments, target)
+
+
+async def save_chat_card(message_id, content, attachments, target):
+    """Persist a compact game report using the same routing and sync as daily chat."""
     from database import get_db
     from sync_events import append_sync_event, broadcast_synced
     from ws import manager
-    content, attachments = result_card(game, result, labels)
-    message_id = f"pool_result_{game['id']}_{result['rack']}"
     now = time.time()
     message = {'id': message_id, 'content': content, 'created_at': now, 'attachments': attachments}
     async with get_db() as db:

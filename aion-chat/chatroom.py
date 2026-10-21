@@ -24,6 +24,7 @@ from ai_providers import (
     with_current_device_context,
 )
 from context_builder import build_ability_block, build_memory_blocks, fetch_merged_timeline, render_merged_timeline
+from intimacy_skill import build_play_prompt
 from ws import manager
 
 # ── Connor-Codex 服务配置 ──
@@ -79,6 +80,30 @@ def get_chatroom_names() -> tuple[str, str, str]:
     ai_name = wb.get("ai_name") or "AI"
     connor_name = cfg.get("connor_name") or "第二AI"
     return user_name, ai_name, connor_name
+
+
+def append_intimacy_prompt(
+    history: list[dict],
+    room_id: str,
+    mode: str,
+    actor: str,
+    names: tuple[str, str, str],
+) -> None:
+    user_name, ai_name, connor_name = names
+    play_prompt = build_play_prompt(
+        "room",
+        room_id,
+        mode,
+        actor=actor,
+        user_name=user_name,
+        actor_names=(ai_name, connor_name),
+    )
+    if not play_prompt:
+        return
+    history.append({"role": "user", "content": play_prompt})
+    history.append(
+        {"role": "assistant", "content": "收到，我会顺着当前上下文自然发挥。"}
+    )
 
 
 def _json_list(value) -> list:
@@ -383,7 +408,7 @@ async def recall_chatroom_memories(
         "id, room_id, scope, scope AS type, content, keywords, importance, "
         "embedding, source_start_ts, source_end_ts, created_at, unresolved, source_msg_id, evidence_summary"
     )
-    query_emb = await get_embedding(query_text)
+    query_emb = await get_embedding(query_text, timeout=4)
     if not query_emb:
         if min_results <= 0:
             return []
@@ -489,7 +514,7 @@ async def build_surfacing_chatroom_memories(
 
     # 2. 话题相关浮现
     if topic and topic.strip() and len(result) < max_total:
-        topic_vec = await get_embedding(topic)
+        topic_vec = await get_embedding(topic, timeout=4)
         if topic_vec:
             async with get_db() as db:
                 db.row_factory = aiosqlite.Row
@@ -1138,6 +1163,14 @@ async def build_aion_group_context(
         history.append({"role": "user", "content": ability_block})
         history.append({"role": "assistant", "content": "好的，需要时我会使用这些指令。"})
 
+    append_intimacy_prompt(
+        history,
+        room_id,
+        "group",
+        "aion",
+        (user_name, ai_name, connor_name),
+    )
+
     history = with_current_device_context(
         history,
         insert_at=len(history),
@@ -1234,6 +1267,14 @@ async def build_connor_group_context(
         history.append({"role": "user", "content": ability_block})
         history.append({"role": "assistant", "content": "好的，需要时我会使用这些指令。"})
 
+    append_intimacy_prompt(
+        history,
+        room_id,
+        "group",
+        "connor",
+        (user_name, ai_name, connor_name),
+    )
+
     history = with_current_device_context(
         history,
         insert_at=len(history),
@@ -1319,7 +1360,7 @@ async def build_connor_1v1_context(
     context_limit = max(1, int(context_limit or 30))
 
     wb = load_worldbook()
-    user_name, _, _ = get_chatroom_names()
+    user_name, ai_name, connor_name = get_chatroom_names()
 
     # 角色设定、用户信息、能力等作为前缀消息对
     connor_full_persona = _read_connor_persona()
@@ -1337,6 +1378,14 @@ async def build_connor_1v1_context(
     merged = await fetch_merged_timeline("connor", context_limit)
     if ability_block:
         messages.append({"role": "assistant", "content": "好的，需要时我会使用这些指令。"})
+
+    append_intimacy_prompt(
+        messages,
+        room_id,
+        "private",
+        "connor",
+        (user_name, ai_name, connor_name),
+    )
 
     messages = with_current_device_context(
         messages,

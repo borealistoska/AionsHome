@@ -287,7 +287,7 @@ const Studio = (() => {
     for (const im of images) {
       html+=paras(c.content.slice(pos, im.after)); pos=im.after;
       if (im.status==='ready') html+=`<figure><img src="${escHtml(im.url)}" loading="lazy" alt="${escHtml(im.prompt)}" tabindex="0" role="button" aria-label="查看并保存故事插画"><figcaption>故事插画 · 点击查看与保存</figcaption></figure>`;
-      else html+=`<div class="studio-notice">${im.status==='failed'?'插画暂未完成':'正在描绘这一幕…'} ${im.status==='failed'?button('重试配图','Studio.illustrate()'):''}</div>`;
+      else html+=`<div class="studio-notice">${im.status==='failed'?escHtml(im.error||'插画暂未完成'):'正在描绘这一幕…'} ${im.status==='failed'?button('重试失败配图','Studio.illustrate()'):''}</div>`;
     }
     html+=paras(c.content.slice(pos));
     if (!c.content) html='<p class="studio-notice">'+(c.writing?'正在构思这一章，正文会逐渐出现在这里。':'本章尚未开始。你可以先看章节计划，再点下方「开始写」。')+'</p>';

@@ -19,7 +19,8 @@
 }
 * { margin:0; padding:0; box-sizing:border-box; }
 html, body { height:100%; }
-body { font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif; background: var(--bg); color: var(--text); overflow: hidden; }
+body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); overflow: hidden; }
+button, input, textarea, select { font-family: inherit; }
 
 /* ── 自定义滚动条 ── */
 ::-webkit-scrollbar {
@@ -643,12 +644,23 @@ body[data-theme="light"] .link-preview-card:hover {
 .modal { background:var(--surface); border:1px solid var(--border); border-radius:12px; width:90%; max-width:420px; padding:20px; max-height:85vh; overflow-y:auto; }
 .modal h3 { margin-bottom:16px; font-size:18px; }
 .modal label { display:block; font-size:13px; color:var(--text2); margin-bottom:4px; margin-top:12px; }
-.modal input { width:100%; background:var(--surface2); color:var(--text); border:1px solid var(--border); border-radius:8px; padding:10px 12px; font-size:14px; outline:none; font-family:monospace; }
+.modal input { width:100%; background:var(--surface2); color:var(--text); border:1px solid var(--border); border-radius:8px; padding:10px 12px; font-size:14px; outline:none; font-family:inherit; }
 .modal input:focus { border-color:var(--accent); }
 .modal .btn-row { display:flex; gap:8px; margin-top:20px; justify-content:flex-end; }
 .modal .btn-row button { padding:8px 18px; border:none; border-radius:8px; font-size:14px; cursor:pointer; }
 .modal .btn-save { background:var(--accent); color:#fff; }
 .modal .btn-cancel { background:var(--surface2); color:var(--text); }
+
+.intimacy-switch-actions { display:inline-flex; align-items:center; gap:8px; }
+.intimacy-preview-trigger { width:28px; height:28px; padding:0; border:1px solid var(--border); border-radius:50%; background:var(--surface2); color:var(--text); cursor:pointer; line-height:1; }
+.intimacy-preview-trigger:disabled { opacity:.35; cursor:default; }
+.intimacy-preview-modal { max-width:460px; }
+.intimacy-preview-header { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }
+.intimacy-preview-header h3 { margin:0; }
+.intimacy-preview-header button { width:30px; height:30px; border:0; border-radius:50%; background:var(--surface2); color:var(--text2); font-size:20px; cursor:pointer; }
+.intimacy-preview-content { min-height:150px; padding:14px 16px; border:1px solid var(--border); border-radius:10px; background:var(--bg); color:var(--text); font-size:13px; line-height:1.65; white-space:pre-wrap; overflow-wrap:anywhere; }
+.intimacy-preview-hint { min-height:18px; margin-top:8px; color:var(--accent); font-size:12px; line-height:1.45; }
+.intimacy-preview-modal button:disabled { opacity:.55; cursor:default; }
 
 /* ── 内联编辑 ── */
 .msg-row.editing { width:100%; max-width:100%; }
@@ -2239,7 +2251,7 @@ body[data-theme="light"] .lounge-report-card { background: var(--surface); }
   width: 100%;
   color: var(--text);
   font-size: var(--private-message-font-size);
-  line-height: 1.62;
+  line-height: 1.45;
   font-weight: 450;
   overflow-wrap: anywhere;
   text-shadow: 0 1px 10px rgba(5, 8, 28, 0.28);
@@ -2247,7 +2259,7 @@ body[data-theme="light"] .lounge-report-card { background: var(--surface); }
 .user-message-unit .msg-bubble {
   max-width: 100%;
   font-size: var(--private-message-font-size);
-  line-height: 1.62;
+  line-height: 1.45;
 }
 .private-message-attachments { max-width: 100%; }
 .private-message-unit .inner-monologue-line {
@@ -2279,7 +2291,9 @@ body[data-theme="light"] .lounge-report-card { background: var(--surface); }
 
 .markdown-body > :first-child { margin-top: 0; }
 .markdown-body > :last-child { margin-bottom: 0; }
-.markdown-body p { margin: 0 0 .72em; }
+.markdown-body p { margin: 0 0 .35em; }
+.private-ai-message-content.markdown-body > p,
+.msg-row:not(.user) .inner-monologue-content.markdown-body > p { text-indent: 1.5em; }
 .markdown-body h1,
 .markdown-body h2,
 .markdown-body h3,

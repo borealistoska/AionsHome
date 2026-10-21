@@ -4,11 +4,66 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
+from PIL import Image
 
 import antigravity_cli as agy
+import antigravity_image_hook
+
+
+def make_image(path):
+    Image.new('RGB', (64, 48), (200, 40, 60)).save(path)
+    return path.read_bytes()
 
 
 class AntigravityProfileTests(unittest.TestCase):
+    def test_staging_recovers_cmyk_jpeg_as_readable_rgb_png(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'upload.jpg'
+            Image.new('CMYK', (64, 48), (0, 200, 180, 0)).save(source)
+            source.write_bytes(source.read_bytes()[:-2])
+            staged = agy._stage_image(source, Path(directory) / 'image.jpg')
+            with Image.open(staged) as image:
+                image.load()
+                self.assertEqual(image.mode, 'RGB')
+
+    def test_staging_repairs_truncated_jpeg_without_changing_original(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'upload.jpg'
+            original = make_image(source)[:-2]  # Missing JPEG EOI marker.
+            source.write_bytes(original)
+            with Image.open(source) as damaged:
+                with self.assertRaises(OSError):
+                    damaged.load()
+            staged = agy._stage_image(source, Path(directory) / 'image-1.jpg')
+            with Image.open(staged) as repaired:
+                repaired.load()
+                self.assertEqual(repaired.format, 'PNG')
+                self.assertEqual(repaired.size, (64, 48))
+                self.assertGreater(repaired.getpixel((6, 4))[0], 190)
+            self.assertEqual(staged.suffix, '.png')
+            self.assertEqual(source.read_bytes(), original)
+
+    def test_staging_preserves_valid_images_and_rejects_unrecoverable_data(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'upload.jpg'
+            original = make_image(source)
+            target = Path(directory) / 'image-1.jpg'
+            self.assertEqual(agy._stage_image(source, target).read_bytes(), original)
+            source.write_bytes(b'not an image')
+            with self.assertRaisesRegex(agy.AntigravityError, '图片'):
+                agy._stage_image(source, Path(directory) / 'image-2.jpg')
+
+    def test_image_hook_only_grants_the_current_image_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            image = str(Path(directory) / 'image.png')
+            call = {'toolCall': {'name': 'view_file', 'args': {'AbsolutePath': image}}}
+            result = antigravity_image_hook.image_permission_decision(call, [image])
+            self.assertEqual(result['decision'], 'allow')
+            self.assertTrue(result['allowTool'])
+            self.assertEqual(antigravity_image_hook.image_permission_decision(call, [])['decision'], 'deny')
+            call['toolCall']['name'] = 'run_command'
+            self.assertEqual(antigravity_image_hook.image_permission_decision(call, [image])['decision'], 'deny')
+
     def test_chat_requires_explicit_denials_before_launch(self):
         with tempfile.TemporaryDirectory() as directory:
             settings = Path(directory) / 'settings.json'
@@ -23,6 +78,17 @@ class AntigravityProfileTests(unittest.TestCase):
                                         'mcp(*)', 'execute_url(*)']},
             }), encoding='utf-8')
             agy.require_chat_permissions(settings)
+            value = json.loads(settings.read_text(encoding='utf-8'))
+            value['toolPermission'] = 'request-review'
+            settings.write_text(json.dumps(value), encoding='utf-8')
+            agy.require_chat_permissions(settings)
+            value.pop('toolPermission')
+            settings.write_text(json.dumps(value), encoding='utf-8')
+            agy.require_chat_permissions(settings)
+            value['toolPermission'] = 'always-proceed'
+            settings.write_text(json.dumps(value), encoding='utf-8')
+            with self.assertRaises(agy.AntigravityError):
+                agy.require_chat_permissions(settings)
             settings.write_text('{bad json', encoding='utf-8')
             with self.assertRaises(agy.AntigravityError):
                 agy.require_chat_permissions(settings)
@@ -85,6 +151,119 @@ class AntigravityStreamTests(unittest.IsolatedAsyncioTestCase):
         self.permission_patch.start()
         self.addCleanup(self.permission_patch.stop)
 
+    async def test_response_progress_without_text_is_forwarded(self):
+        process = FakeProcess([
+            {'event': 'init', 'init': {'agent': agy.AGENT_NAME}},
+            {'event': 'step_update', 'step_update': {'step_type': 'agent_response', 'text_delta': ''}},
+            {'event': 'result', 'result': {'status': 'SUCCESS', 'response': 'done'}},
+        ])
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            agy.asyncio, 'create_subprocess_exec', AsyncMock(return_value=process)
+        ):
+            events = [event async for event in agy.stream_chat('fake', 'hello', '', Path(directory))]
+        self.assertEqual([e['kind'] for e in events], ['activity', 'activity', 'text', 'completed'])
+
+    async def test_chat_waits_for_agy_retry_in_both_stream_modes_only(self):
+        import ai_providers
+        from dataclasses import replace
+        from routes import chat, chatroom
+        import safe_live_stream
+        from stream_safety import StreamActivity
+
+        # Scale the 300s upstream silence + retry to milliseconds. A default
+        # 30ms app idle deadline interrupts before the retry at 60ms.
+        async def source():
+            yield StreamActivity()
+            await asyncio.sleep(.06)
+            yield StreamActivity()
+            await asyncio.sleep(.01)
+            yield 'reply'
+
+        async def consume(surface, mode, model_key):
+            if surface == 'private':
+                if mode == 'legacy':
+                    result = await chat._consume_chat_stream(source(), asyncio.Queue(), model_key=model_key)
+                    return result[0]
+                result = await chat._consume_chat_realtime_stream(
+                    source, asyncio.Queue(), model_key=model_key, transport_mode=mode)
+                return result[0]
+            if mode == 'legacy':
+                return await chatroom._consume_chatroom_stream(
+                    source(), asyncio.Queue(), chunk_type='aion_chunk', model_key=model_key)
+            result = await chatroom._consume_chatroom_realtime_stream(
+                source, asyncio.Queue(), chunk_type='aion_chunk', model_key=model_key, transport_mode=mode)
+            return result.result
+
+        policy = replace(chat.CHAT_STREAM_POLICY, idle_timeout=.03, total_timeout=.4)
+        with patch.dict(ai_providers.MODELS, {
+            'test-agy': {'provider': 'antigravity_cli', 'model': 'fake'},
+            'test-relay': {'provider': 'custom_openai', 'model': 'fake'},
+        }), patch.object(ai_providers, '_ANTIGRAVITY_CHAT_IDLE_TIMEOUT', .15, create=True), patch.object(
+            chat, 'CHAT_STREAM_POLICY', policy
+        ), patch.object(chatroom, 'CHAT_STREAM_POLICY', policy), patch.object(
+            safe_live_stream, 'SAFE_LIVE_IDLE_TIMEOUT', .03
+        ), patch.object(safe_live_stream, 'SAFE_LIVE_TOTAL_TIMEOUT', .4):
+            for surface in ('private', 'group'):
+                for mode in ('legacy', 'safe_live'):
+                    with self.subTest(surface=surface, mode=mode):
+                        result = await consume(surface, mode, 'test-agy')
+                        self.assertIsNone(result.stop_reason)
+                        self.assertEqual(result.committed_text, 'reply')
+            # Other providers keep their existing idle limit.
+            result = await consume('private', 'safe_live', 'test-relay')
+            self.assertEqual(result.stop_reason, 'idle_timeout')
+            # Longer AGY idle allowance never removes the overall budget.
+            with patch.object(safe_live_stream, 'SAFE_LIVE_TOTAL_TIMEOUT', .02):
+                result = await consume('private', 'safe_live', 'test-agy')
+                self.assertIsNotNone(result.stop_reason)
+                self.assertEqual(result.committed_text, '')
+
+    async def test_cancel_during_silent_agy_wait_still_cleans_up(self):
+        process = FakeProcess([])
+        process.stdout = asyncio.StreamReader()
+        process.stderr = asyncio.StreamReader()
+        process.returncode = None
+        started = asyncio.Event()
+        async def spawn(*args, **kwargs):
+            started.set()
+            return process
+        async def collect(directory):
+            return [e async for e in agy.stream_chat('fake', 'hello', '', Path(directory))]
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            agy.asyncio, 'create_subprocess_exec', spawn
+        ), patch('generation_control.terminate_process_tree', new_callable=AsyncMock) as cleanup:
+            task = asyncio.create_task(collect(directory))
+            await started.wait()
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+        cleanup.assert_awaited_once_with(process)
+
+    async def test_success_finishes_without_waiting_for_pipe_eof_and_cleans_up(self):
+        process = FakeProcess([])
+        process.stdout = asyncio.StreamReader()
+        for event in [
+            {'event': 'init', 'init': {'agent': agy.AGENT_NAME}},
+            {'event': 'result', 'result': {'status': 'SUCCESS', 'response': 'done', 'usage': {'output_tokens': 4}}},
+        ]:
+            process.stdout.feed_data((json.dumps(event) + '\n').encode())
+        process.stderr = asyncio.StreamReader()  # Neither pipe closes after result.
+        process.returncode = None
+        events = []
+        async def collect(directory):
+            async for event in agy.stream_chat('fake', 'hello', '', Path(directory)):
+                events.append(event)
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            agy.asyncio, 'create_subprocess_exec', AsyncMock(return_value=process)
+        ), patch('generation_control.terminate_process_tree', new_callable=AsyncMock) as cleanup:
+            try:
+                await asyncio.wait_for(collect(directory), .3)
+            except TimeoutError:
+                self.fail('SUCCESS must finish without waiting for stdout/stderr EOF')
+        self.assertEqual(events[-1]['kind'], 'completed')
+        self.assertEqual(events[-1]['usage']['output_tokens'], 4)
+        cleanup.assert_awaited_once_with(process)
+
     async def test_discovery_uses_supported_tab_separated_models_command(self):
         process = unittest.mock.Mock(returncode=0)
         process.communicate = AsyncMock(return_value=(
@@ -143,7 +322,8 @@ class AntigravityStreamTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(config.MODELS[key]['model'], 'gemini-3.8-flash-high')
             self.assertFalse(config.is_model_deprecated(key))
             self.assertNotIn('AGY · Gemini 3.1 Pro (High)', config.MODELS)
-            self.assertFalse(config.MODELS[key]['vision'])
+            self.assertTrue(config.MODELS[key]['vision'])
+            self.assertTrue(all(value['vision'] for value in config.ANTIGRAVITY_MODELS.values()))
             self.assertFalse(config.MODELS[key]['audio'])
             self.assertTrue(config.is_model_deprecated('AGY-3.1pro'))
         finally:
@@ -167,6 +347,88 @@ class AntigravityStreamTests(unittest.IsolatedAsyncioTestCase):
         payload = json.loads(process.stdin.write.call_args.args[0])
         self.assertEqual(payload['message']['content'], '你好')
         self.assertEqual(spawn.call_args.kwargs['cwd'], str(Path(directory)))
+
+    async def test_provider_keeps_image_association_and_forwards_local_files(self):
+        import ai_providers
+
+        with tempfile.TemporaryDirectory() as directory:
+            image = Path(directory) / 'photo.png'
+            image.write_bytes(b'image data')
+
+            async def stream(*args, **kwargs):
+                self.assertEqual(kwargs['image_paths'], (str(image.resolve()),))
+                self.assertIn('第一张\n（图片附件：图片1）', args[1])
+                self.assertNotIn('@' + str(image), args[1])
+                yield {'kind': 'text', 'text': '看到了'}
+
+            with patch.object(ai_providers, 'UPLOADS_DIR', Path(directory)), patch.object(
+                ai_providers, '_find_antigravity_binary', return_value='agy.exe'
+            ), patch.object(agy, 'stream_chat', stream):
+                chunks = [chunk async for chunk in ai_providers.call_antigravity_cli([
+                    {'role': 'user', 'content': '第一张', 'attachments': '["/uploads/photo.png"]'},
+                    {'role': 'user', 'content': '还是这张', 'attachments': ['/uploads/photo.png']},
+                ], 'gemini-3.8-flash-high')]
+        self.assertIn('看到了', chunks)
+
+    async def test_image_turn_stages_files_allows_view_file_and_cleans_up(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory) / 'workspace'
+            source = Path(directory) / '原图.png'
+            original = make_image(source)
+
+            async def spawn(*command, **kwargs):
+                staged = next((workspace / 'images').rglob('*.png'))
+                self.assertEqual(staged.read_bytes(), original)
+                self.assertEqual(command[command.index('--agent') + 1], 'home-companion-vision')
+                profile = workspace / '.agents/agents/home-companion-vision.md'
+                self.assertIn('tools: [view_file]', profile.read_text(encoding='utf-8'))
+                self.assertEqual(json.loads((workspace / '.agents/image-input.json').read_text(encoding='utf-8')), [str(staged)])
+                process = FakeProcess([
+                    {'event': 'init', 'init': {'agent': 'home-companion-vision'}},
+                    {'event': 'step_update', 'step_update': {'step_type': 'tool', 'tool_name': 'view_file',
+                        'tool_info': {'name': 'view_file', 'parameters': {'AbsolutePath': str(staged)}, 'output': 'image'}}},
+                    {'event': 'result', 'result': {'status': 'SUCCESS', 'response': '红色圆形'}},
+                ])
+                processes.append((process, staged))
+                return process
+
+            processes = []
+            with patch.object(agy.asyncio, 'create_subprocess_exec', spawn):
+                events = [event async for event in agy.stream_chat(
+                    'agy.exe', '这张是什么？', 'test-model', workspace, image_paths=(str(source),))]
+            process, staged = processes[0]
+            payload = json.loads(process.stdin.write.call_args.args[0])
+            self.assertIn('图片1：' + str(staged), payload['message']['content'])
+            self.assertEqual(events[-2]['text'], '红色圆形')
+            self.assertFalse(staged.exists())
+            self.assertFalse((workspace / '.agents/image-input.json').exists())
+            self.assertTrue(source.exists())
+
+    async def test_vision_model_moments_keep_images_for_native_reading(self):
+        import config
+        from routes import moments
+
+        messages = [{'role': 'user', 'content': '看图', 'attachments': ['/uploads/photo.png']}]
+        with patch.dict(config.MODELS, {'vision-test': {'provider': 'antigravity_cli', 'vision': True}}), patch.object(
+            moments, '_sentinel_describe_images', AsyncMock(return_value=[])
+        ) as sentinel, patch.object(moments, '_messages_have_images', return_value=True):
+            self.assertEqual(await moments._prepare_moment_messages_for_model(messages, 'vision-test'), messages)
+        sentinel.assert_not_awaited()
+
+    async def test_image_launch_failure_cleans_manifest_and_staged_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory) / 'workspace'
+            image = Path(directory) / 'source.png'
+            make_image(image)
+            for error in (OSError('launch failed'), asyncio.CancelledError()):
+                with self.subTest(error=type(error).__name__), patch.object(
+                    agy.asyncio, 'create_subprocess_exec', AsyncMock(side_effect=error)
+                ):
+                    with self.assertRaises(type(error)):
+                        _ = [event async for event in agy.stream_chat(
+                            'agy.exe', 'look', 'test-model', workspace, image_paths=(str(image),))]
+                self.assertFalse((workspace / '.agents/image-input.json').exists())
+                self.assertEqual(list((workspace / 'images').iterdir()), [])
 
     async def test_response_only_and_structured_failure_are_not_silently_lost(self):
         for result, expected in [

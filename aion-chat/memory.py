@@ -12,6 +12,7 @@ from config import get_key, get_sentinel_config, get_embedding_config, load_worl
 from database import get_db
 from model_json import extract_json_object
 from ws import manager
+from system_logs import logged_ai_call
 
 # ── 向量工具 ──────────────────────────────────────
 EMBEDDING_MODEL = "gemini-embedding-001"
@@ -218,7 +219,8 @@ async def close_embedding_client() -> None:
 
 
 @timed("embedding")
-async def get_embedding(text: str) -> list[float] | None:
+async def get_embedding(text: str, *, timeout: float | None = None) -> list[float] | None:
+    """聊天召回可指定总等待上限；后台写入沿用客户端的 30 秒超时。"""
     ecfg = get_embedding_config()
     if not ecfg["api_key"]:
         return None
@@ -228,13 +230,14 @@ async def get_embedding(text: str) -> list[float] | None:
         headers = {"Authorization": f"Bearer {ecfg['api_key']}", "Content-Type": "application/json"}
         body = {"model": ecfg["model"], "input": text}
         try:
-            resp = await _get_embedding_client().post(url, json=body, headers=headers)
+            async with asyncio.timeout(timeout):
+                resp = await _get_embedding_client().post(url, json=body, headers=headers)
             if resp.status_code != 200:
                 print(f"[Embedding] OpenAI 兼容调用失败 {resp.status_code}: {resp.text[:300]}")
                 return None
             return resp.json()["data"][0]["embedding"]
         except Exception as e:
-            print(f"[Embedding] 调用异常: {e}")
+            print(f"[Embedding] 调用异常: {type(e).__name__}: {e}")
             return None
     else:
         # Gemini 原生格式
@@ -242,7 +245,8 @@ async def get_embedding(text: str) -> list[float] | None:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:embedContent?key={ecfg['api_key']}"
         body = {"content": {"parts": [{"text": text}]}}
         try:
-            resp = await _get_embedding_client().post(url, json=body)
+            async with asyncio.timeout(timeout):
+                resp = await _get_embedding_client().post(url, json=body)
             resp.raise_for_status()
             return resp.json()["embedding"]["values"]
         except Exception:
@@ -287,7 +291,7 @@ async def recall_memories(query_text: str, query_keywords: list[str] = None,
     threshold 为最终得分门槛。
     返回 (matched, debug_top6): matched 为达标结果, debug_top6 为得分最高的前6条（含未达标）
     """
-    query_vec = await get_embedding(query_text)
+    query_vec = await get_embedding(query_text, timeout=4)
     if not query_vec:
         return [], []
     if query_keywords is None:
@@ -465,7 +469,7 @@ async def build_surfacing_memories(topic: str = "", keywords: list[str] = None,
 
     # 2. 话题相关浮现
     if topic and topic.strip() and len(result) < max_total:
-        topic_vec = await get_embedding(topic)
+        topic_vec = await get_embedding(topic, timeout=4)
         if topic_vec:
             async with get_db() as db:
                 db.row_factory = aiosqlite.Row
@@ -548,6 +552,7 @@ def _extract_gemini_final_text(data: dict) -> str:
     return "\n".join(text.strip() for text in visible if text.strip()).strip()
 
 
+@logged_ai_call("sentinel_text")
 async def _call_sentinel_text(scfg: dict, prompt: str, timeout: int = 60) -> str | None:
     """统一调用哨兵模型（纯文本），支持 Gemini 原生和 OpenAI 兼容格式"""
     if scfg.get("provider") == "codex":
@@ -591,6 +596,7 @@ async def _call_sentinel_text(scfg: dict, prompt: str, timeout: int = 60) -> str
             return _extract_gemini_final_text(data)
 
 
+@logged_ai_call("sentinel_vision")
 async def _call_sentinel_vision(scfg: dict, prompt: str, img_b64: str, mime_type: str = "image/jpeg", timeout: int = 60) -> str | None:
     """统一调用哨兵模型（带图片），支持 Gemini 原生和 OpenAI 兼容格式"""
     if scfg.get("provider") == "codex":

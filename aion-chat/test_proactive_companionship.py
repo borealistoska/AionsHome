@@ -147,6 +147,15 @@ class ProactiveCompanionshipTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await pc.claim_proactive_timer("due-a"))
         self.assertFalse(await pc.claim_proactive_timer("due-a"))
 
+    async def test_direct_external_contact_cancels_only_own_stale_followup(self):
+        from unittest.mock import patch
+        import time
+        await self._seed_timer('aion','due-a','2000-01-01 00:00:00')
+        await self._seed_timer('connor','due-c','2000-01-01 00:00:00')
+        with patch('external_activity.last_interaction',side_effect=lambda actor: time.time()+1 if actor=='aion' else 0):
+            self.assertFalse(await pc.claim_proactive_timer('due-a'))
+            self.assertTrue(await pc.claim_proactive_timer('due-c'))
+
     async def test_schedule_tick_dispatches_due_proactive_timer_through_monitor_capture(self):
         await self._seed_timer("aion", "due-a", "2000-01-01 00:00:00")
         manager = schedule_module.ScheduleManager()

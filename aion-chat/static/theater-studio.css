@@ -4,7 +4,7 @@ body.theater-page.studio-shell {
   --studio-panel:rgba(10,15,48,.76);
   --studio-popup:rgba(12,18,52,.97);
   --studio-selected:rgba(99,111,226,.23);
-  color:var(--text); font-family:"Segoe UI","Microsoft YaHei",sans-serif;
+  color:var(--text); font-family:system-ui,sans-serif;
 }
 body.theater-page.studio-shell[data-theme="light"] {
   --studio-panel:rgba(240,246,255,.72);
@@ -24,7 +24,7 @@ body.studio-shell .messages::-webkit-scrollbar-thumb:hover { background-color:va
 body .chat-area.tts-player-open .messages { padding-top:26px; }
 body .input-box { background:var(--studio-panel) !important; padding:14px 22px max(14px,env(safe-area-inset-bottom)); }
 body .msg-row { width:100%; max-width:none; min-width:0; margin:0; }
-body.theater-page.studio-shell .msg-row .msg-bubble { background:transparent !important; border:0 !important; border-radius:0; box-shadow:none !important; font-size:var(--reader-size,16px); line-height:1.7; padding:0; }
+body.theater-page.studio-shell .msg-row .msg-bubble { background:transparent !important; border:0 !important; border-radius:0; box-shadow:none !important; font-size:var(--reader-size,16px); line-height:1.45; padding:0; }
 body .msg-row.assistant .msg-role-name { color:var(--accent2); }
 body .config-popup,body .persona-modal { background:var(--studio-popup) !important; }
 body .msg-reasoning { background:var(--surface); border-color:var(--border); }
@@ -34,7 +34,7 @@ body button:focus-visible,body input:focus-visible,body textarea:focus-visible,b
 body button:disabled { opacity:.45; cursor:default; }
 .library-brand { padding:27px 22px 17px; }
 .library-brand small,.studio-kicker { display:block; color:var(--accent); letter-spacing:.19em; font-size:10px; margin-bottom:10px; }
-.library-brand strong { font-family:"Noto Serif SC","Songti SC",SimSun,serif; font-size:26px; font-weight:normal; letter-spacing:.12em; }
+.library-brand strong { font-family:inherit; font-size:26px; font-weight:normal; letter-spacing:.12em; }
 .library-brand p { color:var(--text3); font-size:11px; margin-top:9px; }
 body .sidebar-header { border:0; padding:8px 16px 18px; }
 body .sidebar-header button { background:var(--surface2); color:var(--text); border:1px solid var(--border-strong); }
@@ -53,7 +53,7 @@ body.studio-shell .studio-mode-select { max-width:100px; background:var(--surfac
 .studio-directory h3 { font-size:12px; font-weight:normal; color:var(--text3); padding:0 8px 12px; letter-spacing:.15em; }
 .chapter-link { display:flex; align-items:center; gap:12px; width:100%; border:0; border-radius:8px; background:transparent; text-align:left; padding:12px 9px; color:var(--text2); cursor:pointer; }
 .chapter-link.active { background:var(--studio-selected); color:var(--text); }
-.chapter-link .chapter-number { color:var(--accent); font:italic 19px Georgia,serif; }
+.chapter-link .chapter-number { color:var(--accent); font-family:inherit; font-style:italic; font-size:19px; }
 .chapter-link span:nth-child(2) { flex:1; min-width:0; overflow-wrap:anywhere; }
 .chapter-link small { display:block; margin-top:4px; font-size:10px; color:var(--text3); }
 .chapter-word-count { flex-shrink:0; white-space:nowrap; color:var(--text3); font-size:11px; font-variant-numeric:tabular-nums; }
@@ -66,10 +66,11 @@ body.studio-shell.studio-reader-quiet .input-box { display:none; }
 body.studio-shell.studio-chat-input .input-row .send-btn { width:42px; height:42px; padding:0; border-radius:50%; font-size:18px; }
 body.studio-shell .input-row textarea::placeholder { white-space:nowrap; }
 .novel-reader { max-width:none; width:100%; min-width:0; margin:18px 0 70px; }
-.novel-reader h1 { font-family:"Noto Serif SC","Songti SC",SimSun,serif; font-size:clamp(25px,3vw,36px); line-height:1.6; font-weight:normal; letter-spacing:.06em; margin:12px 0; }
+.novel-reader h1 { font-family:inherit; font-size:clamp(25px,3vw,36px); line-height:1.6; font-weight:normal; letter-spacing:.06em; margin:12px 0; }
 .novel-meta { color:var(--text3); font-size:12px; margin-bottom:32px; }
-.novel-body { font-family:"Noto Serif SC","Songti SC","Microsoft YaHei",serif; font-size:var(--reader-size,16px); line-height:1.75; overflow-wrap:anywhere; letter-spacing:.015em; }
-.novel-body p { white-space:pre-wrap; margin:0 0 .75em; }
+.novel-body { font-family:inherit; font-size:var(--reader-size,16px); line-height:1.5; overflow-wrap:anywhere; letter-spacing:.015em; }
+.novel-body p { white-space:pre-wrap; margin:0 0 .35em; }
+.novel-body > p[data-source-start] { text-indent:1.5em; }
 .studio-reader-area { position:relative; display:flex; flex:1; min-height:0; min-width:0; }
 .studio-reader-area>.messages { min-width:0; min-height:0; }
 .studio-follow-toggle { position:absolute; top:6px; right:14px; z-index:8; display:grid; place-items:center; width:36px; height:36px; padding:0; border:1px solid var(--border); border-radius:50%; background:var(--studio-panel); color:var(--text2); opacity:.5; cursor:pointer; transition:opacity .15s; }
@@ -89,7 +90,7 @@ body.studio-shell .input-row textarea::placeholder { white-space:nowrap; }
 .studio-notice { color:var(--text2); font-size:12px; line-height:1.8; margin:12px 0; }
 .studio-empty { margin:auto; text-align:center; max-width:460px; padding:50px 18px; }
 .studio-empty .ornament { font:60px Georgia,serif; color:var(--accent); opacity:.75; margin-bottom:24px; }
-.studio-empty h2 { font:normal 27px "Songti SC",SimSun,serif; margin-bottom:18px; }
+.studio-empty h2 { font-family:inherit; font-size:27px; font-weight:normal; margin-bottom:18px; }
 .studio-empty p { font-size:13px; color:var(--text3); line-height:2; margin-bottom:24px; }
 body .tts-top-player { position:relative; top:auto; left:auto; right:auto; margin:12px 22px 0; background:var(--studio-popup) !important; box-shadow:none; border-color:var(--border-strong); flex-wrap:wrap; }
 .studio-player-label { display:none; width:100%; font-size:11px; color:var(--text2); padding:0 5px 5px; cursor:pointer; }
@@ -98,7 +99,7 @@ body .tts-top-player .studio-stop-synthesis { width:auto; border-radius:6px; pad
 .studio-dialog { color:var(--text); background:var(--studio-popup); border:1px solid var(--border-strong); border-radius:18px; width:min(680px,calc(100vw - 26px)); max-height:88dvh; padding:26px; margin:auto; box-shadow:0 24px 90px #0008; }
 .studio-dialog::backdrop { background:rgba(3,7,25,.65); backdrop-filter:blur(5px); }
 .studio-dialog header { display:flex; justify-content:space-between; align-items:center; margin-bottom:22px; }
-.studio-dialog h2 { font-family:"Songti SC",SimSun,serif; font-weight:normal; font-size:24px; }
+.studio-dialog h2 { font-family:inherit; font-weight:normal; font-size:24px; }
 .studio-dialog label { display:block; font-size:12px; color:var(--text2); margin:17px 0 7px; }
 .studio-dialog input:not([type=checkbox]),.studio-dialog textarea,.studio-dialog select { width:100%; border:1px solid var(--border); border-radius:8px; background:var(--surface2); color:var(--text); padding:11px; line-height:1.7; }
 .studio-dialog textarea { min-height:110px; resize:vertical; }
@@ -121,7 +122,7 @@ body .tts-top-player .studio-stop-synthesis { width:auto; border-radius:6px; pad
   .studio-toolbar .studio-btn { padding:8px 10px; }
   body .input-box { padding:10px 12px max(12px,env(safe-area-inset-bottom)); }
   .novel-reader { margin:15px 0 40px; }
-  .novel-body { font-size:var(--reader-size,16px); line-height:1.75; }
+  .novel-body { font-size:var(--reader-size,16px); }
   body .tts-top-player { margin:8px 12px 0; gap:5px; }
   .studio-dialog { padding:20px; }
   .studio-mode-select { max-width:78px; }
@@ -141,7 +142,7 @@ body.studio-shell[data-theme="light"] .novel-reader { text-shadow:0 1px 8px rgba
 .studio-planning { width:100%; }
 .studio-talk { margin:20px 0 30px; }
 .studio-talk-name { color:var(--accent); font-size:12px; margin-bottom:8px; }
-.studio-talk-content { white-space:pre-wrap; overflow-wrap:anywhere; font-size:var(--reader-size,16px); line-height:1.7; }
+.studio-talk-content { white-space:pre-wrap; overflow-wrap:anywhere; font-size:var(--reader-size,16px); line-height:1.45; }
 .studio-outline-review { padding:20px 0; border-top:1px solid var(--border); }
 .studio-outline-review h2 { font-size:22px; font-weight:normal; }
 .studio-outline-review details { margin:16px 0; }

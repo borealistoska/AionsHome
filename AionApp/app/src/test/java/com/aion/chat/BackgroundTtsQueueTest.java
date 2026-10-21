@@ -4,6 +4,18 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public class BackgroundTtsQueueTest {
+    @Test public void cancelOneReplyKeepsOtherSpeakerAndRejectsLateChunks() {
+        BackgroundTtsQueue queue = new BackgroundTtsQueue();
+        queue.offer("good", 0, "/good");
+        queue.offer("bad", 0, "/bad");
+        assertFalse(queue.cancel("bad"));
+        assertEquals("/good", queue.next());
+        queue.offer("bad", 0, "/late");
+        assertFalse(queue.contains("bad"));
+        assertTrue(queue.cancel("good"));
+        assertNull(queue.next());
+    }
+
     @Test public void ordersSegmentsAndMessagesAndIgnoresDuplicates() {
         BackgroundTtsQueue queue = new BackgroundTtsQueue();
         queue.offer("checkpoint", 1, "/one");

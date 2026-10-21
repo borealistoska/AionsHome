@@ -11,13 +11,14 @@ class EmbeddingClientTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.requests = []
         self.clients = []
+        self.response_delay = 0
         self.config = dict(api_key="first-key", base_url="https://first.test",
                            model="first-model", use_openai=True)
         real_client = httpx.AsyncClient
 
         async def respond(request):
             self.requests.append(request)
-            await asyncio.sleep(0)
+            await asyncio.sleep(self.response_delay)
             if request.url.host == "generativelanguage.googleapis.com":
                 return httpx.Response(200, json={"embedding": {"values": [0.5]}})
             return httpx.Response(200, json={"data": [{"embedding": [0.5]}]})
@@ -68,6 +69,25 @@ class EmbeddingClientTests(unittest.IsolatedAsyncioTestCase):
         self.config["api_key"] = ""
         self.assertIsNone(await memory.get_embedding("one"))
         self.assertEqual(self.clients, [])
+
+    async def test_private_and_chatroom_recall_stop_waiting_after_four_seconds(self):
+        import chatroom
+
+        self.response_delay = 10
+        started = asyncio.get_running_loop().time()
+        try:
+            results = await asyncio.wait_for(asyncio.gather(
+                memory.recall_memories("one"),
+                chatroom.recall_chatroom_memories("two"),
+            ), timeout=4.5)
+        except TimeoutError:
+            self.fail("Slow embedding requests still block chat recall beyond four seconds")
+        self.assertEqual(results, [([], []), []])
+        self.assertLess(asyncio.get_running_loop().time() - started, 4.5)
+
+    async def test_background_embedding_can_finish_after_chat_recall_deadline(self):
+        self.response_delay = 4.2
+        self.assertEqual(await memory.get_embedding("background"), [0.5])
 
 
 if __name__ == "__main__":

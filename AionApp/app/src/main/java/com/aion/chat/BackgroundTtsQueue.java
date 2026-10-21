@@ -36,6 +36,13 @@ final class BackgroundTtsQueue {
 
     boolean contains(String id) { return messages.containsKey(id); }
 
+    boolean cancel(String id) {
+        boolean wasFirst = !messages.isEmpty() && messages.keySet().iterator().next().equals(id);
+        messages.remove(id);
+        remember(id);
+        return wasFirst;
+    }
+
     String next() {
         while (!messages.isEmpty()) {
             String id = messages.keySet().iterator().next();
@@ -63,6 +70,11 @@ final class BackgroundTtsQueue {
     boolean hasPending() {
         next();
         return !messages.isEmpty();
+    }
+
+    String currentMessageId() {
+        next();
+        return messages.isEmpty() ? null : messages.keySet().iterator().next();
     }
 
     void clear() {

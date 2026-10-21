@@ -38,6 +38,42 @@ class _TTSProbe:
 
 
 class ChatStreamSafetyTest(unittest.IsolatedAsyncioTestCase):
+    async def test_all_six_route_wrappers_forward_status_as_activity(self):
+        import ast
+        from pathlib import Path
+        from types import SimpleNamespace
+        from ai_providers import CLI_STATUS_PREFIX
+
+        async def source(*args, **kwargs):
+            yield StreamActivity()
+            yield CLI_STATUS_PREFIX + 'progress'
+            yield 'reply'
+
+        checked = 0
+        for filename in ('chat.py', 'chatroom.py'):
+            tree = ast.parse((Path(__file__).parent / 'routes' / filename).read_text(encoding='utf-8'))
+            for fn in ast.walk(tree):
+                if not isinstance(fn, ast.AsyncFunctionDef) or fn.name != 'content_stream':
+                    continue
+                queue = asyncio.Queue()
+                env = {'stream_ai': source, '_stream_connor_model': source, 'model_started': lambda: lambda c: None,
+                       'CLI_STATUS_PREFIX': CLI_STATUS_PREFIX, 'StreamActivity': StreamActivity,
+                       '_q': queue, 'history': [], 'model_key': 'test', 'usage_meta': {},
+                       'body': SimpleNamespace(max_tokens=None), 'cancel_event': None,
+                       'temperature': None, 'max_tokens': None, 'connor_messages': [],
+                       'connor_history': [], 'aion_history': [], 'connor_model_key': 'test'}
+                factory = ast.parse('def factory():\n    has_reply = False\n    pass\n    return content_stream\n')
+                factory.body[0].body[1] = fn
+                ast.fix_missing_locations(factory)
+                exec(compile(factory, filename, 'exec'), env)
+                chunks = [c async for c in env['factory']()()]
+                with self.subTest(filename=filename, line=fn.lineno):
+                    self.assertEqual(sum(isinstance(c, StreamActivity) for c in chunks), 2)
+                    self.assertEqual(''.join(chunks), 'reply')
+                    self.assertEqual(queue.qsize(), 1)
+                checked += 1
+        self.assertEqual(checked, 6)
+
     async def test_stopped_reply_is_saved_with_checked_prefix_and_reason(self):
         async with aiosqlite.connect(":memory:") as db:
             await db.executescript("""

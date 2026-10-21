@@ -16,6 +16,8 @@ from ws import manager
 from band_commands import process_band_vibration, with_band_vibration_attachment
 from hug_pillow_commands import process_hug_pillow_commands
 from capabilities import process_pat_commands
+from game_invites import process_game_invites
+from rps import process_rps_commands
 from ai_providers import stream_ai, CLI_STATUS_PREFIX
 from memory import recall_memories, format_recalled_memories_for_prompt
 from music import search_songs, get_audio_url
@@ -1423,6 +1425,14 @@ async def _process_background_reply_commands(
         ai_msg_id=ai_msg_id,
     )
     cleaned = await process_pat_commands(
+        cleaned, source_type=target_type, source_id=source_id or "",
+        sender=sender, source_msg_id=ai_msg_id,
+    )
+    cleaned = await process_rps_commands(
+        cleaned, source_type=target_type, source_id=source_id or "",
+        sender=sender, source_msg_id=ai_msg_id,
+    )
+    cleaned = await process_game_invites(
         cleaned, source_type=target_type, source_id=source_id or "",
         sender=sender, source_msg_id=ai_msg_id,
     )

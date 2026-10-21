@@ -252,7 +252,9 @@ async def async_get_last_aion_timeline_user_msg_time(conv_id: str = None) -> flo
             if row and row["created_at"]:
                 latest_ts = max(latest_ts, float(row["created_at"]))
 
-    return latest_ts
+    from external_activity import last_interaction
+    outside_ts = await asyncio.to_thread(last_interaction, 'aion')
+    return max(latest_ts, outside_ts)
 
 
 async def async_get_recent_aion_timeline_text(

@@ -25,6 +25,7 @@ class CodexAppServerEvent:
     kind: str
     text: str = ""
     usage: dict | None = None
+    image: dict | None = None
 
 
 def build_codex_app_server_command(
@@ -146,6 +147,7 @@ async def stream_codex_app_server(
     prompt: str,
     image_paths: list[str] | tuple[str, ...],
     reasoning_summary: str,
+    image_results: bool = False,
     spawn: Callable[..., Awaitable[object]] | None = None,
 ) -> AsyncIterator[CodexAppServerEvent]:
     """Start one ephemeral App Server turn and stream normalized events."""
@@ -158,7 +160,7 @@ async def stream_codex_app_server(
         stderr=asyncio.subprocess.PIPE,
         cwd=cwd,
         env=env,
-        limit=8 * 1024 * 1024,
+        limit=(64 if image_results else 8) * 1024 * 1024,
     )
     stderr_task = asyncio.create_task(_capture_stderr(process.stderr))
     pending: list[dict] = []
@@ -228,6 +230,13 @@ async def stream_codex_app_server(
             message = pending.pop(0) if pending else await _read_json_line(process.stdout)
             method = str(message.get("method") or "")
             params = message.get("params") or {}
+
+            if image_results and method in ("item/started", "item/completed"):
+                item = params.get("item") or {}
+                if item.get("type") == "imageGeneration":
+                    kind = "image_started" if method == "item/started" else "image"
+                    yield CodexAppServerEvent(kind, image=item)
+                    continue
 
             if method == "item/agentMessage/delta":
                 delta = str(params.get("delta") or "")

@@ -9,6 +9,7 @@ import time
 import httpx
 
 from config import get_key, SONGS_DIR
+from system_logs import logged_ai_call
 
 SONG_CMD_PATTERN = re.compile(r"\[SONG\]\s*([\s\S]*?)\s*\[/SONG\]", re.IGNORECASE)
 SONG_VISIBLE_SECTION_PATTERN = re.compile(
@@ -95,6 +96,7 @@ def _parse_generate_content(data: dict) -> tuple[str | None, str, str]:
     return audio_data, mime_type, "\n\n".join(t.strip() for t in text_parts if t.strip())
 
 
+@logged_ai_call("song", model=lambda: SONG_GEN_MODEL)
 async def generate_song(prompt: str) -> dict | None:
     api_key = get_key("gemini")
     if not api_key:

@@ -115,6 +115,8 @@ _STRIP_PATTERNS = [
     re.compile(r'\[微信消息[：:][^\]]*\]'),
     re.compile(r'\[拍拍抱枕:(?:拍打开关|拍拍调慢|拍拍调快)\]'),
     re.compile(r'\[PAT\s*[：:][^\]]*\]', re.IGNORECASE),
+    re.compile(r'\[\s*猜拳\s*[：:][^\]]*(?:\]|$)'),
+    re.compile(r'\[\s*小游戏\s*[：:][^\]]*(?:\]|$)'),
     re.compile(r'[\[【]心里嘀咕\s*[：:]\s*[^\]】]*[\]】]'),
     re.compile(r'\[查看动态:\d+\]'),
     re.compile(r'\[SELFIE:[^\]]*\]'),

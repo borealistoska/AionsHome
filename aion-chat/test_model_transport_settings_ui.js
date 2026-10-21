@@ -23,3 +23,38 @@ vm.runInNewContext(`${renderSource}\nrenderModelTransportModes();`, context);
 assert.match(list.innerHTML, /已统一启用/);
 assert.doesNotMatch(list.innerHTML, /<button|<select|旧版保守模式/);
 console.log('unified model transport UI passed');
+
+async function testSettingsLoadWithoutWaitingForModels() {
+  const initSource = source.match(/\(async function init\(\) \{[\s\S]*?\n\}\)\(\);/)[0];
+  const fields = new Map();
+  const field = id => {
+    if (!fields.has(id)) fields.set(id, { value: '' });
+    return fields.get(id);
+  };
+  const saved = { gemini_key: 'saved-test-key', custom_model_routes: [{ id: 'saved-route' }] };
+  const initContext = {
+    $: field,
+    api: (method, url) => url === '/api/settings'
+      ? Promise.resolve(saved)
+      : new Promise(() => {}), // Model discovery can remain pending indefinitely.
+    normalizeRoutesForUi: routes => routes,
+    updateSentinelRouteUi() {},
+    updateAsrProviderUi() {},
+    renderCustomRoutes() {},
+    renderModelTransportModes() {},
+    refreshPhoneScreenStatus() {},
+    refreshFloatingChatStatus() {},
+    refreshMediaCacheStatus() {},
+  };
+  vm.runInNewContext(initSource, initContext);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(field('geminiKeyInput').value, saved.gemini_key,
+    'Saved keys should display even while model discovery is pending');
+  assert.deepEqual(initContext.customModelRoutes, saved.custom_model_routes);
+  console.log('settings load independently of model discovery passed');
+}
+
+testSettingsLoadWithoutWaitingForModels().catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});

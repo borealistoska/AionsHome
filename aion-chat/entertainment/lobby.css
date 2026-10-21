@@ -89,6 +89,8 @@ body[data-page=entertainment][data-theme=dark] {
 }
 .game::before { content: ""; position: absolute; left: 0; top: 26px; bottom: 26px; width: 3px; border-radius: 0 3px 3px 0; background: var(--game-tint); }
 .game.cards { --game-tint: #d4aa65; --game-wash: #d4aa6512; }
+.game.dice { --game-tint: #d19781; --game-wash: #d1978112; }
+.table-symbol { display: grid; place-items: center; color: var(--game-tint); background: var(--game-wash); border: 1px solid var(--lounge-line); font: 36px Georgia, serif; }
 .game.forest { --game-tint: #ae8ed5; --game-wash: #ae8ed512; }
 .game.seeky { --game-tint: #70b9d8; --game-wash: #70b9d812; }
 .game.hug { --game-tint: #dc9a87; --game-wash: #dc9a8712; }

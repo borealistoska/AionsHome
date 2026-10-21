@@ -44,7 +44,7 @@ const _securityAlertUi = import('/static/security-alert.js')
 let pendingAttachments = [];  // [{url, type, name}]
 let worldBook = { ai_persona: "", user_persona: "", ai_name: "AI", user_name: "你" };
 let msgDebugData = {};  // { msgId: { model, recalled_memories, prompt_messages, prompt_count, usage } }
-let systemLogs = [];    // 系统日志（会话级，刷新清空）
+let systemLogs = [];    // 服务端持久保留最近 30 条 AI 调用
 let msgMusicCards = {}; // { msgId: [{ id, name, artist, album, cover, audio_url, candidates }] }
 let hasMoreMessages = false;   // 是否还有更早的消息可加载
 let loadingMore = false;       // 防止重复加载
@@ -59,10 +59,17 @@ window.addEventListener('aion-client-update-ready', () => {
   if (window.__aionClientUpdateScheduled) return;
   window.__aionClientUpdateScheduled = true;
   const reloadWhenIdle = () => {
-    const active = document.activeElement;
-    const editing = active && (active.matches?.('input,textarea,select,[contenteditable="true"]')
-      || active.tagName === 'IFRAME');
-    if (sending || streamingAiId || editing || voiceInCall
+    let active = document.activeElement;
+    let framedBusy = false;
+    while (active?.tagName === 'IFRAME') {
+      try {
+        const child = active.contentWindow;
+        framedBusy = framedBusy || !!child?.isAionClientUpdateBusy?.();
+        active = child?.document.activeElement;
+      } catch (_) { framedBusy = true; break; }
+    }
+    const editing = active?.matches?.('input,textarea,select,[contenteditable="true"]');
+    if (sending || streamingAiId || editing || framedBusy || voiceInCall
         || (typeof videoCall !== 'undefined' && videoCall.active)) {
       setTimeout(reloadWhenIdle, 1500);
       return;
@@ -258,12 +265,157 @@ function formatMsg(s) {
 function toggleConfig(e) {
   e.stopPropagation();
   $("configPopup").classList.toggle("show");
-  if ($('configPopup').classList.contains('show')) refreshTTSVoices();
+  if ($('configPopup').classList.contains('show')) {
+    refreshTTSVoices();
+    if (currentConvId) syncPrivateIntimacy(currentConvId);
+  }
 }
 document.addEventListener("click", e => {
   const p = $("configPopup");
   if (p.classList.contains("show") && !p.contains(e.target)) p.classList.remove("show");
 });
+
+const INTIMACY_PRIVATE_KEY_PREFIX = 'aionshome_intimacy_private_v1:';
+
+function privateIntimacyStorageKey(convId) {
+  return INTIMACY_PRIVATE_KEY_PREFIX + String(convId || '');
+}
+
+function privateIntimacyEnabled(convId) {
+  return !!convId && localStorage.getItem(privateIntimacyStorageKey(convId)) === '1';
+}
+
+function applyPrivateIntimacyState(data = {}) {
+  const toggle = $('intimacySkillToggle');
+  const status = $('intimacySkillStatus');
+  const startBtn = $('intimacyStartBtn');
+  const previewBtn = $('intimacyPreviewBtn');
+  const enabled = !!data.enabled;
+  const state = data.state || (enabled ? 'armed' : 'off');
+  if (toggle) toggle.checked = enabled;
+  if (status) {
+    const seen = new Set(Array.isArray(data.seen_actors) ? data.seen_actors : []);
+    const receipt = state === 'active' ? (seen.has('aion') ? ' · 已读取' : ' · 等待读取') : '';
+    status.textContent = (state === 'active' ? '进行中' : (state === 'armed' ? '待机' : '关闭')) + receipt;
+  }
+  if (startBtn) {
+    startBtn.style.display = enabled ? 'block' : 'none';
+    startBtn.textContent = state === 'active' ? '换一套玩法' : '开始本轮';
+    startBtn.disabled = false;
+  }
+  if (previewBtn) previewBtn.disabled = state !== 'active';
+}
+
+async function syncPrivateIntimacy(convId) {
+  if (!convId) return;
+  const enabled = privateIntimacyEnabled(convId);
+  try {
+    const state = await api('GET', '/api/conversations/' + encodeURIComponent(convId) + '/intimacy');
+    if (convId === currentConvId) applyPrivateIntimacyState(state);
+  } catch (e) {
+    applyPrivateIntimacyState({ enabled, state: enabled ? 'armed' : 'off' });
+    console.warn('[intimacy] private sync failed:', e);
+  }
+}
+
+async function toggleIntimacySkill() {
+  if (!currentConvId) return;
+  const enabled = !!$('intimacySkillToggle')?.checked;
+  localStorage.setItem(privateIntimacyStorageKey(currentConvId), enabled ? '1' : '0');
+  try {
+    const state = await api('PUT', '/api/conversations/' + encodeURIComponent(currentConvId) + '/intimacy', { enabled });
+    applyPrivateIntimacyState(state);
+  } catch (e) {
+    applyPrivateIntimacyState({ enabled, state: enabled ? 'armed' : 'off' });
+    console.warn('[intimacy] private toggle failed:', e);
+  }
+}
+
+async function startIntimacyRound() {
+  if (!currentConvId || !$('intimacySkillToggle')?.checked) return;
+  const btn = $('intimacyStartBtn');
+  if (btn) btn.disabled = true;
+  try {
+    const state = await api('POST', '/api/conversations/' + encodeURIComponent(currentConvId) + '/intimacy/start', {});
+    applyPrivateIntimacyState(state);
+  } catch (e) {
+    if (btn) btn.disabled = false;
+    console.warn('[intimacy] private start failed:', e);
+  }
+}
+
+function renderIntimacyPreviewCard(container, card) {
+  card = card || {};
+  const lines = [];
+  const add = (label, value) => {
+    const text = Array.isArray(value) ? value.filter(Boolean).join('、') : String(value || '').trim();
+    if (text) lines.push(`${label}：${text}`);
+  };
+  lines.push('核心');
+  add('主类', card.category);
+  add('子玩法', card.subtypes);
+  lines.push('', '场景与姿势');
+  add('地点', card.location);
+  add('主位', card.position);
+  add('换位', card.transition_position);
+  lines.push('', '心理与辅助');
+  add('暴露风险', card.exposure);
+  add('束缚', card.restraint);
+  add('道具', card.props);
+  add('服装玩法', card.clothing_play);
+  add('心理', card.psychology);
+  add('三人结构', card.group_dynamic);
+  add('射精玩法', card.ejaculation_play);
+  lines.push('', '最终设定');
+  if (card.mode === 'group') {
+    add('男性位 A', card.final_finish?.a);
+    add('男性位 B', card.final_finish?.b);
+    add('关系', card.final_finish?.relation);
+  } else {
+    add('目标', card.final_finish?.target);
+  }
+  container.textContent = lines.join('\n').replace(/\n{3,}/g, '\n\n');
+}
+
+async function openIntimacyPreview() {
+  if (!currentConvId) return;
+  const modal = $('intimacyPreviewModal');
+  const content = $('intimacyPreviewContent');
+  const hint = $('intimacyPreviewHint');
+  if (modal) modal.classList.add('show');
+  if (content) content.textContent = '正在翻开本轮卡片…';
+  if (hint) hint.textContent = '';
+  try {
+    const preview = await api('GET', '/api/conversations/' + encodeURIComponent(currentConvId) + '/intimacy/preview');
+    if (content) {
+      if (preview?.card) renderIntimacyPreviewCard(content, preview.card);
+      else content.textContent = '当前还没有抽取玩法。';
+    }
+    if (hint) hint.textContent = preview?.reroll_queued ? '新玩法已排队，会在当前回复完成后生效。' : '';
+  } catch (e) {
+    if (content) content.textContent = '暂时无法读取本轮玩法。';
+    console.warn('[intimacy] private preview failed:', e);
+  }
+}
+
+function closeIntimacyPreview() {
+  $('intimacyPreviewModal')?.classList.remove('show');
+}
+
+async function rerollIntimacyPreview() {
+  if (!currentConvId) return;
+  const btn = $('intimacyPreviewRerollBtn');
+  if (btn) btn.disabled = true;
+  try {
+    const state = await api('POST', '/api/conversations/' + encodeURIComponent(currentConvId) + '/intimacy/start', {});
+    applyPrivateIntimacyState(state);
+    await openIntimacyPreview();
+  } catch (e) {
+    console.warn('[intimacy] private preview reroll failed:', e);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
 
 // 同步温度到后端 settings
 async function syncTemperature() {
@@ -891,6 +1043,7 @@ function stopLiveTTSQueue() {
   ttsManualStop = true;
   clearTTSResumeTimer();
   ttsAudio.pause();
+  ttsAudio.endSpeech?.();
   ttsAudio.src = '';
   ttsChunkQueues = {};
   ttsPlayOrder = [];
@@ -961,6 +1114,7 @@ document.addEventListener('visibilitychange', () => {
   else {
     bumpTTSPlaybackState();
     reconcilePrivateSync();
+    loadSystemLogs();
   }
 });
 window.addEventListener('pagehide', refreshTTSPlaybackState);
@@ -1106,7 +1260,7 @@ function enqueueTTSChunk(msgId, seq, url, createdAt, targetClientId, text = "", 
 async function playNextTTSChunk() {
   const hasChatroomTTS = ttsPlayOrder.some(id => id.startsWith('cm_'));
   const voiceCallActive = !!(window.VoiceCall && window.VoiceCall.isActive && window.VoiceCall.isActive());
-  if (!hasChatroomTTS && !ttsEnabled && !Object.values(ttsChunkQueues).some(q => q.expressive) && !voiceCallActive && !(typeof videoCall !== 'undefined' && videoCall.active)) { ttsPlaying = false; return; }
+  if (!hasChatroomTTS && !ttsEnabled && !Object.values(ttsChunkQueues).some(q => q.expressive) && !voiceCallActive && !(typeof videoCall !== 'undefined' && videoCall.active)) { ttsAudio.endSpeech?.(); ttsPlaying = false; return; }
 
   // 找到当前应该播放的 msgId
   while (ttsPlayOrder.length > 0) {
@@ -1122,12 +1276,14 @@ async function playNextTTSChunk() {
       if (q.finished) {
         const maxSeq = Object.keys(q.chunks).length > 0 ? Math.max(...Object.keys(q.chunks).map(Number)) : -1;
         if (nextSeq > maxSeq) {
+          ttsAudio.endSpeech?.();
           ttsPlayOrder.shift();
           delete ttsChunkQueues[msgId];
           continue; // 继续处理下一条消息
         }
         while (q.nextPlay <= maxSeq && q.chunks[q.nextPlay] === undefined) q.nextPlay++;
         if (q.nextPlay > maxSeq) {
+          ttsAudio.endSpeech?.();
           ttsPlayOrder.shift();
           delete ttsChunkQueues[msgId];
           continue;
@@ -1147,6 +1303,7 @@ async function playNextTTSChunk() {
     ttsManualStop = false;
     clearTTSResumeTimer();
 	    try {
+	      ttsAudio.beginSpeech?.();
 	      ttsAudio.src = url;
 	      _notifyVoiceCallPrivateTTSStart(msgId, q.nextPlay, chunk);
 	      ttsAudio.onended = () => {
@@ -1185,6 +1342,7 @@ async function playNextTTSChunk() {
   }
 
   // 所有消息播完
+  ttsAudio.endSpeech?.();
   ttsPlaying = false;
 	  if (voiceInCall || (typeof videoCall !== 'undefined' && videoCall.active)) {
 	    notifyVoiceAiSpeaking(false);
@@ -1205,6 +1363,11 @@ function finishTTSForMsg(msgId, createdAt, targetClientId) {
   _cleanupFinishedTTS();
 }
 
+function finishPendingTTS() {
+  for (const queue of Object.values(ttsChunkQueues)) queue.finished = true;
+  _cleanupFinishedTTS();
+}
+
 function _cleanupFinishedTTS() {
   while (ttsPlayOrder.length > 0) {
     const msgId = ttsPlayOrder[0];
@@ -1213,6 +1376,7 @@ function _cleanupFinishedTTS() {
     // 检查是否所有分段都已播完
     const maxSeq = Object.keys(q.chunks).length > 0 ? Math.max(...Object.keys(q.chunks).map(Number)) : -1;
     if (q.nextPlay > maxSeq) {
+      ttsAudio.endSpeech?.();
       ttsPlayOrder.shift();
       delete ttsChunkQueues[msgId];
     } else {
@@ -1443,10 +1607,15 @@ function connectWS() {
     rememberPrivateSyncSeq(msg);
     handleSync(msg);
   };
-  ws.onclose = () => setTimeout(connectWS, 2000);
+  ws.onclose = () => {
+    finishPendingTTS();
+    setTimeout(connectWS, 2000);
+  };
 }
 
 function handleSync(msg) {
+  if (msg.type === 'system_log') { addSystemLog(msg.data); return; }
+  if (msg.type === 'rps_updated') { window.AionRps?.onUpdate(msg.data); return; }
   if (msg.type === 'generation_stopped') { _chatControl.remoteStop(msg.data); return; }
   if (!_chatControl.accepts(msg)) return;
   const { type, data } = msg;
@@ -1471,6 +1640,7 @@ function handleSync(msg) {
     renderConvList();
     if (data.id === currentConvId) { currentConvId = null; currentMessages = []; localStorage.removeItem('aion_last_conv'); renderMessages(); }
   } else if (type === "msg_created") {
+    window.AionRps?.onInvite(data);
     const wasServerCounted = serverMessageIds.has(data.id);
     serverMessageIds.add(data.id);
     if (data.conv_id === currentConvId) {
@@ -1552,6 +1722,7 @@ function handleSync(msg) {
       handleActivityCheck(data.conv_id, data.n, data.msg_id);
     }
   } else if (type === "debug") {
+    addSystemLog(data);
     // 通过 WebSocket 收到 debug 信息（语音发送时前端没有 SSE 流）
     if (data.msg_id && !streamingAiId) {
       msgDebugData[data.msg_id] = data;
@@ -1787,11 +1958,11 @@ function privateSystemMessageHTML(m, nextMessage = null) {
         },
       )
     : "";
-  const contentHtml = pat ? `<span class="pat-text">${escHtml(m.content || '')}</span>` : snapshotHtml || (window.SystemNoticeUI
+  const contentHtml = window.AionRps?.inviteHTML(m) || (pat ? `<span class="pat-text">${escHtml(m.content || '')}</span>` : snapshotHtml || (window.SystemNoticeUI
     ? window.SystemNoticeUI.renderSystemNoticeContent(displayContent, {escapeHtml: escHtml, attachments: m.attachments})
-    : `<span class="system-notice-text">${escHtml(displayContent)}</span>`);
+    : `<span class="system-notice-text">${escHtml(displayContent)}</span>`));
   return `
-  <div class="msg-row system${pat ? ' pat-notice' : ''}${loungeStatus ? ' lounge-visit-status-line' : ''}" id="m_${m.id}" data-msg-id="${m.id}" tabindex="0" onclick="this.focus()"${afterAttr}${beforeAttr}>
+  <div class="msg-row system${window.AionRps?.isUserInvite(m) ? ' rps-user-invite' : ''}${pat ? ' pat-notice' : ''}${loungeStatus ? ' lounge-visit-status-line' : ''}" id="m_${m.id}" data-msg-id="${m.id}" tabindex="0" onclick="this.focus()"${afterAttr}${beforeAttr}>
     <div class="system-notice">
       <span class="system-notice-marker" aria-hidden="true">&gt;</span>
       ${contentHtml}
@@ -1813,6 +1984,7 @@ function normalizePrivateMarkdownParagraphs(value, isUser) {
 }
 
 function privateMarkdownMessageHtml(value, isUser) {
+  if (!isUser && window.AionRps) value = window.AionRps.stripCommands(value);
   const source = normalizePrivateMarkdownParagraphs(value, isUser);
   const renderMarkdown = window.ChatroomMarkdown && window.ChatroomMarkdown.render
     ? window.ChatroomMarkdown.render
@@ -2088,13 +2260,60 @@ function toggleDebugDetail(msgId) {
 
 // ── 系统日志 ──
 let sysLogHasUnreadError = false;  // 是否有未读的错误日志
+let sysLogLoadVersion = 0;
+let sysLogLocalLoaded = false;
+
+function saveLocalSystemLogs() {
+  try {
+    // Network failures cannot reach the server, so keep those on this device.
+    localStorage.setItem('aion_system_log_errors_v1', JSON.stringify(systemLogs.filter(d => !d.log_id)));
+  } catch (_) {}
+}
+
+async function loadSystemLogs() {
+  if (!sysLogLocalLoaded) {
+    sysLogLocalLoaded = true;
+    try {
+      const local = JSON.parse(localStorage.getItem('aion_system_log_errors_v1') || '[]');
+      if (Array.isArray(local)) {
+        for (const d of local.slice(0, 30).reverse()) {
+          if (d && typeof d === 'object') addSystemLog(d);
+        }
+      }
+    } catch (_) {}
+  }
+  const version = ++sysLogLoadVersion;
+  const before = new Map(systemLogs.map(d => [d._id, d]));
+  try {
+    const saved = await api('GET', '/api/system-logs');
+    if (version !== sysLogLoadVersion || !Array.isArray(saved)) return;
+    // Preserve events arriving while the snapshot request was in flight.
+    const arrived = systemLogs.filter(d => before.get(d._id) !== d);
+    const localErrors = systemLogs.filter(d => !d.log_id);
+    systemLogs = [];
+    for (const d of [...saved].reverse()) addSystemLog(d);
+    for (const d of [...localErrors, ...arrived].reverse()) addSystemLog(d);
+    renderSystemLogList();
+  } catch (e) {
+    console.warn('读取系统日志失败:', e);
+  }
+}
 
 function addSystemLog(d) {
-  // 按 msg_id 去重，避免 SSE + WebSocket 双通道导致重复
-  if (d.msg_id && systemLogs.some(log => log.msg_id === d.msg_id)) return;
-  const now = new Date();
-  const ts = String(now.getHours()).padStart(2,'0') + ':' + String(now.getMinutes()).padStart(2,'0') + ':' + String(now.getSeconds()).padStart(2,'0');
-  systemLogs.unshift({ ...d, _ts: ts, _id: 'slog_' + Date.now() + '_' + Math.random().toString(36).slice(2,6) });
+  const logId = d.log_id || d.usage?.system_log_id;
+  const index = systemLogs.findIndex(log => logId ? log.log_id === logId
+    : (d.msg_id && log.msg_id === d.msg_id) || (d._id && log._id === d._id));
+  const previous = index >= 0 ? systemLogs[index] : {};
+  const startedAt = d.started_at ?? previous.started_at ?? Date.now() / 1000;
+  const now = new Date(startedAt * 1000);
+  const ts = now.toLocaleString('zh-CN', { hour12: false });
+  const item = { ...previous, ...d, log_id: logId || previous.log_id, started_at: startedAt,
+    _ts: ts, _id: previous._id || d._id || 'slog_' + (logId || Date.now() + '_' + Math.random().toString(36).slice(2,6)) };
+  if (index >= 0) systemLogs.splice(index, 1);
+  systemLogs.unshift(item);
+  systemLogs.sort((a, b) => b.started_at - a.started_at);
+  systemLogs = systemLogs.slice(0, 30);
+  saveLocalSystemLogs();
   // 如果是错误日志，闪烁系统日志按钮
   if (d.has_error) {
     sysLogHasUnreadError = true;
@@ -2195,6 +2414,10 @@ function _buildTokenDetailHtml(u) {
 function _formatSystemLogForCopy(d) {
   const lines = [];
   lines.push(`[${d._ts || ''}] ${d.model || '?'}`);
+  if (d.source) lines.push(`来源: ${d.source}`);
+  if (d.status) lines.push(`状态: ${systemLogStatus(d.status)}`);
+  if (d.duration_seconds != null) lines.push(`耗时: ${d.duration_seconds} 秒`);
+  if (d.usage) lines.push(`Token 用量: ${JSON.stringify(d.usage)}`);
   if (d.has_error && d.error_text) lines.push(`错误: ${d.error_text}`);
   if (d.recall_topic) lines.push(`话题: ${d.recall_topic}`);
   if (d.recall_keywords) lines.push(`关键词: ${d.recall_keywords}`);
@@ -2241,11 +2464,15 @@ async function copyAllSystemLogs() {
   }
 }
 
+function systemLogStatus(status) {
+  return { running: '调用中', success: '成功', error: '失败', cancelled: '已中断' }[status] || status;
+}
+
 function renderSystemLogList() {
   const el = $("sysLogList");
   const countEl = $("sysLogCount");
   if (!el) return;
-  if (countEl) countEl.textContent = `共 ${systemLogs.length} 条（刷新后清空）`;
+  if (countEl) countEl.textContent = `共 ${systemLogs.length} 条（保留最近 30 条）`;
   if (systemLogs.length === 0) {
     el.innerHTML = '<div class="syslog-empty">暂无日志</div>';
     return;
@@ -2307,6 +2534,8 @@ function renderSystemLogList() {
       <span class="syslog-time">${d._ts}</span>
       ${errorTag}
       <span class="syslog-model">📦 ${escHtml(d.model || '?')}</span>
+      ${d.source ? `<span class="syslog-mem">${escHtml(d.source)}</span>` : ''}
+      ${d.status ? `<span class="syslog-mem">${escHtml(systemLogStatus(d.status))}${d.duration_seconds != null ? ` · ${d.duration_seconds} 秒` : ''}</span>` : ''}
       <span class="syslog-tokens">${tokenText}</span>
       <span class="${memCls}">${memText}</span>
       ${hasDetail ? `<button class="syslog-detail-toggle" onclick="toggleSysLogDetail('${detailId}')">详情 ▾</button>` : ''}
@@ -2333,12 +2562,21 @@ function openSystemLog() {
   if (btn) btn.classList.remove('syslog-btn-flash');
   renderSystemLogList();
   $("sysLogModal").classList.add("show");
+  loadSystemLogs();
 }
 function closeSystemLog() {
   $("sysLogModal").classList.remove("show");
 }
-function clearSystemLog() {
+async function clearSystemLog() {
+  try {
+    await api('DELETE', '/api/system-logs');
+  } catch (e) {
+    showToast('日志清空失败，请稍后重试');
+    return;
+  }
+  ++sysLogLoadVersion;
   systemLogs = [];
+  saveLocalSystemLogs();
   sysLogHasUnreadError = false;
   const btn = $("sysLogBtn");
   if (btn) btn.classList.remove('syslog-btn-flash');
@@ -2690,6 +2928,12 @@ async function selectConv(id) {
   document.getElementById('privateReplyPreparation')?.remove();
   const loadId = ++privateConversationLoadId;
   currentConvId = id;
+  applyPrivateIntimacyState({
+    enabled: privateIntimacyEnabled(id),
+    state: privateIntimacyEnabled(id) ? 'armed' : 'off',
+  });
+  syncPrivateIntimacy(id);
+  window.AionRps?.refresh();
   localStorage.setItem('aion_last_conv', id);
   msgDebugData = {};
   _heartWhisperMsgIds.clear();
@@ -2739,6 +2983,7 @@ async function selectConv(id) {
 
 async function refreshCurrentConversationFromServer(options = {}) {
   if (!currentConvId) return false;
+  window.AionRps?.refresh({live:true});
   const convId = currentConvId;
   try {
     conversations = await api("GET", "/api/conversations");
@@ -2837,7 +3082,7 @@ function _showSendBtn() {
 function _updateSendBtnState() {
   if (sending || _chatControl.active || _chatControl.retryStop) return;
   const btn = $("sendBtn");
-  btn.disabled = !$("input").value.trim() && !pendingAttachments.length;
+  btn.disabled = !$("input").value.trim() && !pendingAttachments.length && !window.AionRps?.pendingRoundId();
 }
 
 const _chatControl = new ChatGenerationControl({
@@ -2900,7 +3145,8 @@ function _getMaxTokens() {
 // ── 发送消息 ──
 async function send() {
   const input = $("input");
-  const text = input.value.trim();
+  const rpsRoundId = window.AionRps?.pendingRoundId() || "";
+  const text = input.value.trim() || (rpsRoundId ? "来猜拳吧" : "");
   if (pendingAttachments.some(a => a.uploading)) { alert('图片或附件还在上传，请稍等'); return; }
   if ((!text && !pendingAttachments.length) || !currentConvId || sending) return;
 
@@ -2928,10 +3174,11 @@ async function send() {
     const res = await _chatControl.fetch(generation, `/api/conversations/${currentConvId}/send`, {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({ content: text, context_limit: contextLimit, attachments, whisper_mode: whisperMode, temperature, max_tokens: maxTokens, tts_enabled: ttsEnabled, tts_voice: ttsVoiceId, client_id: _clientId }),
+      body: JSON.stringify({ content: text, rps_round_id: rpsRoundId, context_limit: contextLimit, attachments, whisper_mode: whisperMode, temperature, max_tokens: maxTokens, tts_enabled: ttsEnabled, tts_voice: ttsVoiceId, client_id: _clientId }),
       signal: generation.controller.signal
     });
 
+    if (res.ok) window.AionRps?.refresh();
     await _processSSEStream(res);
 
   } catch (err) {
@@ -4862,7 +5109,7 @@ async function _voiceSendMessage(audioBlob, duration) {
     const res = await _chatControl.fetch(generation, `/api/conversations/${currentConvId}/send`, {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({ content: "", context_limit: contextLimit, attachments, whisper_mode: whisperMode, temperature, max_tokens: maxTokens, tts_enabled: ttsEnabled, tts_voice: ttsVoiceId, client_id: _clientId }),
+      body: JSON.stringify({ content: "", rps_round_id: window.AionRps?.pendingRoundId() || "", context_limit: contextLimit, attachments, whisper_mode: whisperMode, temperature, max_tokens: maxTokens, tts_enabled: ttsEnabled, tts_voice: ttsVoiceId, client_id: _clientId }),
       signal: generation.controller.signal
     });
     // 复用和 send() 完全相同的 SSE 处理逻辑
@@ -5423,7 +5670,7 @@ function syncSubPageMode(url) {
     try { return new URL(url, location.origin).pathname; } catch(e) { return url || ''; }
   })();
   const isHome = path === '/';
-  const isImmersive = path === '/wishes';
+  const isImmersive = ['/wishes', '/texas-holdem', '/liars-dice'].includes(path);
   const ov = $('subPageOverlay');
   ov.classList.remove('album-viewing');
   ov.classList.toggle('home-subpage', isHome);
@@ -5797,6 +6044,17 @@ function closeWalletPanel() {
 }
 
 // All page/frame state above must exist before opening the initial desktop.
+window.AionRps?.bind({
+  container: $('messages'),
+  composer: $('rpsComposer'),
+  onPendingChange: () => _updateSendBtnState(),
+  getContext: () => ({ scope: 'private', source_id: currentConvId,
+    visible: !$('subPageOverlay')?.classList.contains('show'),
+    names: { user: worldBook.user_name || '你', aion: worldBook.ai_name || 'AI' }, actors: ['aion'] }),
+  getOptions: () => ({ context_limit: parseInt($('contextSlider').value) || 30,
+    tts_enabled: ttsEnabled, tts_voice: ttsVoiceId, whisper_mode: whisperMode }),
+  onError: message => alert(message),
+});
 window.AionPat?.bind({
   container: $('messages'),
   getContext: () => ({

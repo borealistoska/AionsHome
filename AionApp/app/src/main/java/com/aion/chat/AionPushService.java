@@ -595,7 +595,7 @@ public class AionPushService extends Service {
         if (miBandRuntime != null && miBandCommandListener != null) {
             miBandRuntime.removeListener(miBandCommandListener);
         }
-        if (miBandRuntime != null) miBandRuntime.disconnect();
+        if (miBandRuntime != null) miBandRuntime.releaseForServiceStop();
         stopEsp32Bridge();
         stopPhoneScreenProjection();
         phoneCameraState.disarm();
@@ -2564,6 +2564,7 @@ public class AionPushService extends Service {
                     break;
                 }
                 case "tts_chunk":
+                case "tts_cancel":
                 case "tts_done": {
                     mainHandler.post(() -> {
                         boolean expressive = data != null && data.optBoolean("expressive", false);

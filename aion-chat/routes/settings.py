@@ -8,7 +8,7 @@ import re
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response, FileResponse
 from pydantic import BaseModel, Field
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Literal
 
 import httpx
 
@@ -32,7 +32,7 @@ async def list_models():
         replace_antigravity_models({
             f"AGY · {item['name']}": {
                 "provider": "antigravity_cli", "model": item["model"],
-                "vision": False, "audio": False,
+                "audio": False,  # config 根据官方模型系列补齐 vision 能力。
             }
             for item in catalog
         }, persist=True)
@@ -78,6 +78,7 @@ class SettingsUpdate(BaseModel):
     embedding_base_url: Optional[str] = None
     embedding_api_key: Optional[str] = None
     embedding_model: Optional[str] = None
+    image_gen_provider: Optional[Literal['existing', 'codex']] = None
     image_gen_base_url: Optional[str] = None
     image_gen_api_key: Optional[str] = None
     image_gen_model: Optional[str] = None
@@ -156,6 +157,7 @@ async def get_settings():
         "embedding_base_url": SETTINGS.get("embedding_base_url", ""),
         "embedding_api_key": SETTINGS.get("embedding_api_key", ""),
         "embedding_model": SETTINGS.get("embedding_model", ""),
+        "image_gen_provider": SETTINGS.get("image_gen_provider", "existing"),
         "image_gen_base_url": SETTINGS.get("image_gen_base_url", ""),
         "image_gen_api_key": SETTINGS.get("image_gen_api_key", ""),
         "image_gen_model": SETTINGS.get("image_gen_model", ""),
@@ -214,6 +216,8 @@ async def update_settings(body: SettingsUpdate):
         if value is not None:
             SETTINGS[field] = value.strip()
     SETTINGS.update(image_config)
+    if body.image_gen_provider is not None:
+        SETTINGS['image_gen_provider'] = body.image_gen_provider
     if body.minimax_tts_model is not None and body.minimax_tts_model not in MINIMAX_TTS_MODELS:
         raise HTTPException(status_code=400, detail="MiniMax 语音模型无效")
     minimax_voice_pattern = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{7,255}$")

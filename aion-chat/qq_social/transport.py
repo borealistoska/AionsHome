@@ -27,7 +27,8 @@ class BotTransport:
         self.user_id = ''
         self.session_id = ''
         self.sequence = None
-        self.status = dict(connected=False, state='准备连接', error='', username='', last_ready=0)
+        self.status = dict(connected=False, state='准备连接', error='', username='', last_ready=0,
+                           retry_stopped=False, attempts=0)
 
     async def authorize(self):
         if self.token and time.time() < self.expires - 45:
@@ -57,9 +58,12 @@ class BotTransport:
         return await self.request('POST','/v2/groups/'+quote(group_id,safe='')+'/messages',json=payload)
 
     async def run(self):
+        failures = 0
+        self.status.update(retry_stopped=False, attempts=0)
         while True:
+            last_ready = self.status['last_ready']
             try:
-                self.status.update(state='连接中',error='')
+                self.status.update(state='连接中',error='',attempts=failures+1)
                 me = await self.request('GET','/users/@me')
                 self.user_id = str(me.get('id',''))
                 self.status['username'] = str(me.get('username',''))
@@ -71,6 +75,12 @@ class BotTransport:
                 self.status.update(connected=False,state='等待重连',error=str(exc) if isinstance(exc,QQAPIError) else type(exc).__name__)
             finally:
                 self.status['connected'] = False
+            if self.status['last_ready'] != last_ready:
+                failures = 0  # A successful READY/RESUMED starts a new failure streak.
+            failures += 1
+            if failures >= 3:
+                self.status.update(state='已停止 · 手动连接', retry_stopped=True, attempts=3)
+                return
             await asyncio.sleep(20)
 
     async def listen(self, url):

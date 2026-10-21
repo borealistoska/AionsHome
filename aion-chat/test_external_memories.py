@@ -20,6 +20,9 @@ class ExternalMemoryTests(unittest.IsolatedAsyncioTestCase):
         self.embedding = patch('memory.get_embedding', new=AsyncMock(return_value=[.1, .2]))
         self.embedding.start()
         self.addCleanup(self.embedding.stop)
+        self.chatroom_embedding = patch('chatroom.get_embedding', new=AsyncMock(return_value=[.1, .2]))
+        self.chatroom_embedding.start()
+        self.addCleanup(self.chatroom_embedding.stop)
 
     def test_only_own_standalone_command_is_executed_and_never_leaks(self):
         from external_memories import split_memory_command

@@ -1,5 +1,7 @@
 import sys
 import base64
+import json
+import httpx
 import tempfile
 import unittest
 from pathlib import Path
@@ -64,6 +66,67 @@ def fake_client_factory(response):
 
 
 class RelayProviderErrorPassthroughTests(unittest.IsolatedAsyncioTestCase):
+    async def _replay_completion(self, provider, frames, *, timeout_at_end=True, use_meta=True):
+        import ai_providers
+        class Response(FakeStreamResponse):
+            closed = False
+            async def __aexit__(self, *args):
+                self.closed = True
+            async def aiter_lines(self):
+                for frame in frames:
+                    yield 'data: ' + json.dumps(frame)
+                if timeout_at_end:
+                    raise httpx.ReadTimeout('upstream kept the completed connection open')
+        response = Response()
+        meta = {}
+        target = getattr(ai_providers, 'call_' + provider).__wrapped__
+        cfg = {'base_url': 'https://relay.example', 'model': 'test'} if provider == 'custom_openai' else 'test'
+        with patch('ai_providers.httpx.AsyncClient', new=fake_client_factory(response)):
+            chunks = [chunk async for chunk in target([], cfg, meta if use_meta else None)]
+        self.assertTrue(response.closed)
+        return chunks, meta
+
+    async def test_normal_stop_and_final_usage_close_completed_relay_streams(self):
+        stop = {'choices': [{'delta': {'content': 'last'}, 'finish_reason': 'stop'}]}
+        usage = {'usage': {'prompt_tokens': 5, 'completion_tokens': 2, 'total_tokens': 7}}
+        for provider in ('custom_openai', 'aipro', 'siliconflow'):
+            for frames in ([{**stop, **usage}], [stop, usage]):
+                with self.subTest(provider=provider, frames=len(frames)):
+                    try:
+                        chunks, meta = await self._replay_completion(provider, frames)
+                    except httpx.ReadTimeout:
+                        self.fail(f'{provider} waited after normal stop and final usage')
+                    self.assertEqual(''.join(chunks), 'last')
+                    self.assertEqual(meta['total_tokens'], 7)
+
+    async def test_intermediate_usage_and_incomplete_stream_still_time_out(self):
+        for provider in ('custom_openai', 'aipro', 'siliconflow'):
+            with self.subTest(provider=provider), self.assertRaises(httpx.ReadTimeout):
+                await self._replay_completion(provider, [
+                    {'usage': {'total_tokens': 1}},
+                    {'choices': [{'delta': {'content': 'partial'}, 'finish_reason': 'stop'}]},
+                ])
+
+    async def test_reasoning_only_frames_remain_activity_without_meta_requirement(self):
+        for provider in ('custom_openai', 'aipro', 'siliconflow', 'gemini'):
+            with self.subTest(provider=provider):
+                frame = ({'candidates': [{'content': {'parts': [{'thought': True, 'text': 'thinking'}]}}]}
+                         if provider == 'gemini' else {'choices': [{'delta': {'reasoning_content': 'thinking'}}]})
+                chunks, _ = await self._replay_completion(provider, [frame], timeout_at_end=False, use_meta=False)
+                self.assertTrue(any(isinstance(c, StreamActivity) for c in chunks))
+                self.assertNotIn('thinking', ''.join(chunks))
+
+    async def test_gemini_stop_keeps_last_text_and_usage_without_waiting_for_eof(self):
+        try:
+            chunks, meta = await self._replay_completion('gemini', [{
+                'candidates': [{'finishReason': 'STOP', 'content': {'parts': [{'text': 'last'}]}}],
+                'usageMetadata': {'totalTokenCount': 7},
+            }])
+        except httpx.ReadTimeout:
+            self.fail('Gemini waited after STOP and usageMetadata')
+        self.assertEqual(''.join(chunks), 'last')
+        self.assertEqual(meta['total_tokens'], 7)
+
     async def test_custom_openai_uses_requested_wait(self):
         response = FakeStreamResponse(lines=['data: [DONE]'])
         seen = []

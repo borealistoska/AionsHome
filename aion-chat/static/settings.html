@@ -703,11 +703,20 @@ body[data-theme="light"] .transport-mode-btn.is-active {
       <summary>
         <div class="summary-title">
           <strong>🎨 生图模型</strong>
-          <span>独立配置文生图与参考图自拍的 OpenAI 兼容接口</span>
+          <span>聊天自拍与小剧场插画共用，保留各自人物参考照</span>
         </div>
         <span class="summary-chevron">›</span>
       </summary>
       <div class="card-body">
+        <div class="field">
+          <label class="form-label" for="imageGenProviderInput">生图来源</label>
+          <select class="form-input" id="imageGenProviderInput" onchange="updateImageGenProviderUi()">
+            <option value="existing">API 接口（原有配置）</option>
+            <option value="codex">Codex 登录额度</option>
+          </select>
+        </div>
+        <p class="hint" id="imageGenCodexHint" hidden>使用本机 Codex 已登录账号的额度，无需填写生图 Key。自拍与小剧场插画继续使用各自参考照；生成失败时不会自动切换到 API 接口。</p>
+        <div id="imageGenApiConfig">
         <p class="hint">三项全部留空时，继续使用原来的 Gemini 生图模型和上方 Gemini API Key。填写完整并保存后，使用自定义接口；清空三项即可恢复默认。</p>
         <div class="settings-grid">
           <div class="field">
@@ -724,6 +733,7 @@ body[data-theme="light"] .transport-mode-btn.is-active {
           </div>
         </div>
         <p class="hint">使用 chat/completions 接口，参考图通过 image_url 发送。请填写支持此格式生图的模型，不是仅支持看图的聊天模型。自定义接口失败时不会自动改用 Gemini。</p>
+        </div>
       </div>
     </details>
 
@@ -932,7 +942,6 @@ body[data-theme="light"] .transport-mode-btn.is-active {
 connectCommonWS();
 
 var customModelRoutes = [];
-var modelTransportRows = [];
 
 function escHtml(value) {
   var div = document.createElement("div");
@@ -1180,6 +1189,12 @@ function collectCustomRoutes() {
   return routes;
 }
 
+function updateImageGenProviderUi() {
+  var codex = $("imageGenProviderInput").value === "codex";
+  $("imageGenApiConfig").hidden = codex;
+  $("imageGenCodexHint").hidden = !codex;
+}
+
 function updateSentinelRouteUi() {
   var route = $("sentinelRouteInput").value;
   var useLuna = route === "codex_luna";
@@ -1207,18 +1222,7 @@ function updateAsrProviderUi(usePreset) {
 }
 
 (async function init() {
-  var loaded = await Promise.all([
-    api("GET", "/api/settings"),
-    api("GET", "/api/models")
-  ]);
-  var s = loaded[0];
-  modelTransportRows = Array.isArray(loaded[1]) ? loaded[1].map(function(row) {
-    return {
-      key: row.key,
-      transport_mode: row.transport_mode === "safe_live" ? "safe_live" : "legacy",
-      supports_safe_live: row.supports_safe_live === true
-    };
-  }) : [];
+  var s = await api("GET", "/api/settings");
   $("geminiKeyInput").value = s.gemini_key || "";
   $("geminiFreeKeyInput").value = s.gemini_free_key || "";
   $("sentinelRouteInput").value = s.sentinel_route === "codex_luna" ? "codex_luna" : "original";
@@ -1229,6 +1233,8 @@ function updateAsrProviderUi(usePreset) {
   $("embeddingBaseUrlInput").value = s.embedding_base_url || "";
   $("embeddingApiKeyInput").value = s.embedding_api_key || "";
   $("embeddingModelInput").value = s.embedding_model || "";
+  $("imageGenProviderInput").value = s.image_gen_provider === "codex" ? "codex" : "existing";
+  updateImageGenProviderUi();
   $("imageGenBaseUrlInput").value = s.image_gen_base_url || "";
   $("imageGenApiKeyInput").value = s.image_gen_api_key || "";
   $("imageGenModelInput").value = s.image_gen_model || "";
@@ -1312,11 +1318,12 @@ async function saveSettings() {
     image_gen_model: $("imageGenModelInput").value.trim()
   };
   var imageValues = Object.values(imageConfig);
-  if (imageValues.some(Boolean) && !imageValues.every(Boolean)) {
+  var imageGenProvider = $("imageGenProviderInput").value;
+  if (imageGenProvider !== "codex" && imageValues.some(Boolean) && !imageValues.every(Boolean)) {
     showToast("请完整填写生图 API 地址、Key 和模型名，或全部清空以使用 Gemini");
     return;
   }
-  if (imageConfig.image_gen_base_url) {
+  if (imageGenProvider !== "codex" && imageConfig.image_gen_base_url) {
     try {
       var imageUrl = new URL(imageConfig.image_gen_base_url);
       if (!["http:", "https:"].includes(imageUrl.protocol) || !imageUrl.hostname || imageUrl.search || imageUrl.hash || imageUrl.username || imageUrl.password) throw new Error("invalid URL");
@@ -1344,9 +1351,8 @@ async function saveSettings() {
     embedding_base_url: $("embeddingBaseUrlInput").value.trim(),
     embedding_api_key: $("embeddingApiKeyInput").value.trim(),
     embedding_model: $("embeddingModelInput").value.trim(),
-    image_gen_base_url: imageConfig.image_gen_base_url,
-    image_gen_api_key: imageConfig.image_gen_api_key,
-    image_gen_model: imageConfig.image_gen_model,
+    image_gen_provider: imageGenProvider,
+    ...(imageGenProvider === "codex" ? {} : imageConfig),
     siliconflow_key: $("sfKeyInput").value.trim(),
     minimax_tts_key: $("minimaxTtsKeyInput").value.trim(),
     ...elevenSettings(),

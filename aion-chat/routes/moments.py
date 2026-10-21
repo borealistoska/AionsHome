@@ -105,7 +105,7 @@ async def _prepare_moment_messages_for_model(messages: list[dict], model_key: st
     cfg = MODELS.get(model_key) or {}
     provider = str(cfg.get("provider") or "")
     key = str(model_key or "").strip().lower()
-    needs_sentinel = key == "codex" or (not cfg.get("vision", True)) or provider in {"codex_cli", "antigravity_cli"}
+    needs_sentinel = key == "codex" or (not cfg.get("vision", True)) or provider == "codex_cli"
     if needs_sentinel and _messages_have_images(messages):
         return await _sentinel_describe_images(messages)
     return messages

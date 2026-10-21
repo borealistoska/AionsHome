@@ -234,7 +234,15 @@ class ConnectionManager:
         log.debug("TTS event dropped because no playable client is active: %s", data.get("type"))
 
     async def broadcast(self, data: dict, exclude: WebSocket = None, *, expressive_autoplay: bool = False):
-        data = generation_event(data)
+        if data.get("type") == "debug":
+            try:
+                from system_logs import enrich_debug
+                data = {**data, "data": enrich_debug(data["data"])}
+            except Exception:
+                log.exception("Unable to enrich AI system log")
+        # Diagnostics must also arrive after a generation has been stopped.
+        if data.get("type") != "system_log":
+            data = generation_event(data)
         from expressive_voice import prepare_message, start_message
         await prepare_message(data)
         proactive_changed = False

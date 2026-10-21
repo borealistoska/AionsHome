@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#11110f">
+  <title>小家的游戏桌</title>
+  <link rel="stylesheet" href="/static/table-games.css?v=20261021-chat-target">
+</head>
+<body data-theme="dark" data-page="table-games">
+<main class="table-room">
+  <header class="room-header">
+    <div class="room-title"><a href="/playground" class="back" aria-label="返回娱乐室" title="返回娱乐室">♠</a><div><h1 id="title">游戏桌</h1><p id="roomSubtitle" class="eyebrow">PRIVATE ROOM</p></div></div>
+    <div class="room-tools"><button id="soundToggle" aria-label="关闭游戏音效" aria-pressed="true">音效</button><button id="refresh" aria-label="刷新牌桌">刷新</button><button id="settingsToggle">设置</button></div>
+  </header>
+  <dialog id="setup" class="table-dialog setup">
+    <button id="settingsClose" class="dialog-close" aria-label="关闭设置">×</button><h2>设置</h2>
+    <div class="setup-fields"><label>和谁一起玩<select id="opponent"><option value="both">三个人一起</option><option value="aion">与第一位伴侣双人玩</option><option value="connor">与第二位伴侣双人玩</option></select></label>
+      <label id="wildSetting">骰子规则<select id="wild"><option value="yes">1 点百搭 · 叫 1 后失效</option><option value="no">不百搭 · 只数实际点数</option></select></label>
+      <label><span id="stakeLabel">本局约定金额（元）</span><input id="stake" type="number" inputmode="decimal" min="0" max="1000000" step="0.01" value="10"></label>
+      <button id="newGame" class="primary">入座开局</button></div>
+    <p id="setupNote" class="muted"></p>
+    <p id="walletInfo" class="muted"></p>
+    <button id="cashout" type="button" hidden>收桌退回余额</button>
+  </dialog>
+  <div id="errorBox" class="error-box" role="alert" hidden><span id="errorText"></span><button id="retry">重试这一回合</button></div>
+  <section class="game-stage" aria-label="游戏桌">
+    <div class="opponent-zone"><div id="opponents" class="opponents"></div>
+    <div id="tableBubbles" class="table-bubbles" aria-label="同伴的桌边发言" aria-live="polite"></div></div>
+    <div class="felt">
+      <p id="tableCaption" class="table-caption">把日常留在门外，把好运带上桌。</p>
+      <div id="centerpiece" class="centerpiece"></div>
+      <p id="tableHint" class="table-hint"></p>
+    </div>
+    <div id="selfSeat" class="self-seat"></div>
+  </section>
+  <div class="play-console">
+  <span id="roundLabel" class="round-label">一起玩一局</span>
+  <section class="controls" aria-label="回合操作">
+    <p id="status" class="status" role="status" aria-live="polite">选好同伴，就可以开局了。</p>
+    <div id="actionArea"></div>
+    <input id="speech" type="hidden" value="">
+  </section>
+  <div class="bottom-dock">
+    <button id="tableChatToggle" aria-expanded="false" aria-controls="roomChat">桌边聊天</button>
+    <button id="tableVoiceHold" type="button" aria-pressed="false"><span class="voice-label">按住说话</span></button>
+    <button id="rulesToggle" type="button">玩法</button>
+  </div>
+  <small id="tableVoiceHint" class="voice-hint">松手发送 · 滑开取消</small>
+  </div>
+  <p id="tableFeedback" class="table-feedback" role="status"></p>
+  <p id="refreshFeedback" class="refresh-feedback" role="status" hidden></p>
+</main>
+<dialog id="rulesDialog" class="table-dialog"><button id="rulesClose" class="dialog-close" aria-label="关闭玩法">×</button><h2>怎么玩？</h2><div id="rulesText"></div></dialog>
+<dialog id="summaryDialog" class="table-dialog summary-dialog"><button id="summaryClose" class="dialog-close" aria-label="关闭结算">×</button><p class="dialog-kicker">这一场，好好记下来</p><h2 id="summaryTitle">本场结算</h2><p id="summaryNote"></p><div id="summaryTotals"></div><div id="summaryRounds"></div></dialog>
+<button id="chatDismiss" type="button" aria-label="关闭桌边聊天" hidden></button>
+<section id="roomChat" class="room-chat" aria-label="桌边聊聊" hidden>
+  <div class="chat-heading"><h2>桌边聊聊</h2><label><input type="checkbox" id="tableVoice" checked>读出新消息</label><button id="chatClose" aria-label="关闭聊天">×</button></div>
+  <div class="chat-tabs"><button id="showChatLog" type="button" aria-pressed="true">聊天</button><button id="showRoundLog" type="button" aria-pressed="false">每轮过程</button></div>
+  <div id="tableMessages" class="chat-history" role="log" aria-live="polite"></div>
+  <div id="roundLog" class="chat-history" hidden><ol id="history"><li class="muted">第一句，等你开场。</li></ol></div>
+  <div class="chat-target"><label>说给<select id="chatTarget"><option value="">在场的大家</option></select></label><button id="stopSpeech" type="button">停止朗读</button></div>
+  <form id="chatForm" class="chat-compose"><textarea id="tableChatInput" aria-label="桌边聊天" placeholder="可以聊这局，也可以随便说点什么……" maxlength="2000" rows="2"></textarea><button type="submit" id="sendChat" class="primary">发送</button></form>
+  <div class="chat-feedback"><p id="chatState" role="status"></p><button id="retryChat" type="button" hidden>重试接话</button></div>
+</section>
+<script src="/static/theme.js?v=theme-20260606"></script>
+<script src="/static/table-voice.js?v=20261019"></script>
+<script src="/static/table-atmosphere.js?v=20261020-scene"></script>
+<script src="/static/table-companion.js?v=20261021-session"></script>
+<script src="/static/table-games.js?v=20261021-session"></script>
+</body></html>

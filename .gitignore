@@ -74,7 +74,6 @@ LittleToy/
 火山引擎TTSdemo/
 
 # ── 个人文件（不应上传） ──
-自己看的存档.txt
 MW_RAG_Backup_*.json
 import_mw_rag.py
 fix_schedules.py
@@ -120,6 +119,10 @@ Thumbs.db
 *.pfx
 *.jks
 *.keystore
+# Local QQ credentials (also protect accidental copies outside data/)
+credentials.json
+credentials-import.txt
+qq-bot-credentials.txt
 
 # ── 运行时生成的私人内容 ──
 aion-chat/data/model_raw_responses/
@@ -131,7 +134,8 @@ aion-chat/data/*.sqlite3
 aion-chat/data/*.log
 
 # data/ 默认全部是本机运行数据；只保留空目录占位
-aion-chat/data/*
+aion-chat/data/**
+!aion-chat/data/intimacy_play_pool.json
 !aion-chat/data/chats/
 !aion-chat/data/chats/.gitkeep
 !aion-chat/data/monitor_logs/
@@ -150,6 +154,7 @@ Connor-BrowserTool/browser-profile/
 Connor-BrowserTool/node_modules/
 
 # ── 本地 QA、截图与临时产物 ──
+.tmp/
 codex_art/
 cache/
 temp_wheel/

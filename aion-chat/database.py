@@ -124,6 +124,8 @@ async def init_db():
         await db.execute("CREATE INDEX IF NOT EXISTS idx_messages_ai_feedback ON messages(ai_feedback_updated_at)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_conversations_updated ON conversations(updated_at DESC)")
         await ensure_message_ingress_dedupe_table(db)
+        from rps import ensure_rps_tables
+        await ensure_rps_tables(db)
         from app_supervision_ai import ensure_app_supervision_tables
         await ensure_app_supervision_tables(db)
         from lounge_visit_repository import ensure_lounge_visit_tables

@@ -1,15 +1,16 @@
 """
-AI 生图模块：可配置 OpenAI 兼容接口，未配置时沿用 Gemini
+AI 生图模块：Codex 登录额度或 OpenAI 兼容接口，未配置时沿用 Gemini
 支持 SELFIE（带参考图）和 DRAW（纯文本）两种模式
 """
 
-import base64, re, mimetypes
+import base64, re, mimetypes, time
 from pathlib import Path
 
 import httpx
 
 from config import SETTINGS, get_key, PUBLIC_DIR
 from album import save_generated_image
+from system_logs import logged_ai_call
 
 # 参考图位置（用于 SELFIE 模式）
 REFERENCE_IMAGE_PATH = PUBLIC_DIR / "生图锚点.jpg"
@@ -107,12 +108,29 @@ async def _generate_openai_image(prompt: str, is_selfie: bool, source_identity: 
     return None
 
 
-async def generate_image(prompt: str, is_selfie: bool = False, source_identity: str = "", *, references=None) -> str | None:
+async def _generate_codex_image(prompt, is_selfie, source_identity, *, references=None, raise_errors=False):
+    from codex_image_gen import generate_codex_image
+    started = time.monotonic()
+    try:
+        return await generate_codex_image(prompt, is_selfie, source_identity, references=references)
+    except Exception as exc:
+        print(f"[image_gen] Codex 生图失败（{type(exc).__name__}，{time.monotonic()-started:.1f}s），未切换至其他接口")
+        if raise_errors:
+            raise
+        return None
+
+
+@logged_ai_call("image", model=lambda: 'codex/image-generation' if SETTINGS.get('image_gen_provider') == 'codex' else SETTINGS.get("image_gen_model") or IMAGE_GEN_MODEL)
+async def generate_image(prompt: str, is_selfie: bool = False, source_identity: str = "", *, references=None, raise_errors=False) -> str | None:
     """
-    调用设置中的生图模型，未配置时使用 Gemini；保存到相册并返回 uploads 相对路径。
+    调用设置中的生图来源，未配置时使用 Gemini；保存到相册并返回 uploads 相对路径。
     is_selfie=True 时自动附带参考图。
-    失败返回 None。
+    失败返回 None；小剧场可请求保留 Codex 异常以展示失败原因。
     """
+    if SETTINGS.get('image_gen_provider') == 'codex':
+        if raise_errors:
+            return await _generate_codex_image(prompt, is_selfie, source_identity, references=references, raise_errors=True)
+        return await _generate_codex_image(prompt, is_selfie, source_identity, references=references)
     custom = [(SETTINGS.get(key) or "").strip() for key in
               ("image_gen_base_url", "image_gen_api_key", "image_gen_model")]
     if any(custom):

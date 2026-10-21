@@ -32,6 +32,7 @@ from config import BASE_DIR, DATA_DIR, PUBLIC_DIR, UPLOADS_DIR, ALBUM_IMAGES_DIR
 from database import init_db, get_db
 from active_window_state import restore_active_windows
 from ws import manager
+from system_logs import router as system_logs_router
 from security_access import SecurityAccessMiddleware, SecurityAccessService
 from camera import cam
 from voice import voice
@@ -64,7 +65,9 @@ from routes import wallpaper as wallpaper_routes
 from routes import playground as playground_routes
 from routes import chatroom as chatroom_routes
 from capabilities import pat_router
+from rps import router as rps_router
 from routes import doudizhu as doudizhu_routes
+from routes import table_games as table_games_routes
 from routes import seeky as seeky_routes
 from routes import wallet as wallet_routes
 from routes import connor_wallet as connor_wallet_routes
@@ -310,6 +313,7 @@ app.mount("/aion-pet", StaticFiles(directory=str(BASE_DIR.parent / "AionPet")), 
 
 # 路由
 app.include_router(chat.router)
+app.include_router(system_logs_router)
 app.include_router(cam_routes.router)
 app.include_router(files.router)
 from network_check import router as network_check_router
@@ -349,7 +353,9 @@ app.include_router(wallpaper_routes.router)
 app.include_router(playground_routes.router)
 app.include_router(chatroom_routes.router)
 app.include_router(pat_router)
+app.include_router(rps_router)
 app.include_router(doudizhu_routes.router)
+app.include_router(table_games_routes.router)
 # Optional game: failures must not prevent the rest of the home from starting.
 try:
     from billiards.routes import install as install_billiards
@@ -561,6 +567,12 @@ async def chatroom_page():
 @app.get("/doudizhu")
 async def doudizhu_page():
     return FileResponse(BASE_DIR / "static" / "doudizhu.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+
+
+@app.get("/liars-dice")
+@app.get("/texas-holdem")
+async def table_games_page():
+    return FileResponse(BASE_DIR / "static" / "table-games.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 @app.get("/seeky")
 async def seeky_page():

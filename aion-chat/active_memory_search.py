@@ -14,7 +14,7 @@ from typing import Literal, Sequence
 import aiosqlite
 
 from database import get_db
-from memory import _memory_time_payload, _unpack_embedding, cosine_similarity, get_embedding
+from memory import _json_list, _memory_time_payload, _unpack_embedding, cosine_similarity, get_embedding
 
 
 MAX_REQUESTS = 5
@@ -305,7 +305,7 @@ async def search_actor_memories(
         rows = [dict(row) for row in await cursor.fetchall()]
 
     embeddings = await asyncio.gather(
-        *(get_embedding(request.query) for request in limited), return_exceptions=True
+        *(get_embedding(request.query, timeout=4) for request in limited), return_exceptions=True
     )
     vector_scores: dict[tuple[str, int], float] = {}
     for row in rows:
@@ -406,9 +406,14 @@ async def _read_message(actor: str, source_id: str) -> dict | None:
                 f'SELECT m.*, m.rowid AS source_rowid, {speaker} AS speaker, {window} AS window_id {sql} WHERE {scope} AND m.id=?',
                 (raw_id,),
             )).fetchone()
-            if row:
+            if row and not _pending_rps_result(dict(row)):
                 return {**dict(row), 'source_id': source_id}
     return None
+
+
+def _pending_rps_result(row: dict) -> bool:
+    return any(isinstance(a, dict) and a.get('type') == 'rps_pending_context'
+               for a in _json_list(row.get('attachments')))
 
 
 async def open_memory_source(actor: str, source_id: str, query: str = '') -> list[MemorySearchResult]:
@@ -442,7 +447,7 @@ async def open_memory_source(actor: str, source_id: str, query: str = '') -> lis
                     f'AND (m.created_at,m.rowid) {op} (?,?) ORDER BY m.created_at {direction},m.rowid {direction} LIMIT 1',
                     (row['window_id'], row['created_at'], row['source_rowid']),
                 )).fetchone()
-                if other:
+                if other and not _pending_rps_result(dict(other)):
                     neighbors.append({**dict(other), 'source_id': f"{kind}:{other['id']}"})
     ordered = sorted([*neighbors, row], key=lambda r: (r['created_at'], r['source_rowid']))
     return [MemorySearchResult(source_id, actor, _excerpt(row['content'], query, SUMMARY_LIMIT),
@@ -478,6 +483,8 @@ async def search_chat_history(actor: str, requests: Sequence[MemorySearchRequest
                 )).fetchall()
                 for value in rows:
                     row = {**dict(value), 'source_id': f"{kind}:{value['id']}"}
+                    if _pending_rps_result(row):
+                        continue
                     hits = sum(term in row['content'].casefold() for term in terms)
                     result = MemorySearchResult(row['source_id'], actor, _excerpt(row['content'], request.query, SUMMARY_LIMIT),
                                                 row['created_at'], hits, ['历史聊天文本命中'], True,

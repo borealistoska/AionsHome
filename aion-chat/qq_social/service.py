@@ -64,7 +64,8 @@ class Service:
     def active(self, actor, group_id, epoch):
         cfg = self.store.settings(actor)
         group = self.store.group(actor, group_id)
-        return cfg['enabled'] and cfg['epoch']==epoch and group and group['enabled']
+        stopped = getattr(self.transports.get(actor), 'status', {}).get('retry_stopped', False)
+        return not stopped and cfg['enabled'] and cfg['epoch']==epoch and group and group['enabled']
 
     async def ingest(self, actor, kind, data):
         if kind not in ('GROUP_AT_MESSAGE_CREATE','GROUP_MESSAGE_CREATE','GROUP_ADD_ROBOT'):
@@ -125,6 +126,9 @@ class Service:
                                      self_mention=self_mention, id_mention=id_mention)
         if not self.store.record(event):
             return
+        from external_activity import touch_owner
+        if any(m['member_id']==member and m['is_owner'] for m in self.store.members(actor,group_id)):
+            touch_owner(actor,'qq',group_id,direct=direct,at=created)
         key = (actor,group_id)
         if not event['is_bot']:
             self.policy.human(key)
@@ -210,6 +214,15 @@ class Service:
                     self.last_send[actor] = time.time()
                     self.last_error.pop(actor,None)
                     self.store.record(dict(actor=actor,group_id=group['group_id'],message_id=str(result.get('id') or f'local-{time.time_ns()}'),member_id=actor,name=actor,content=text,is_bot=True,direction='out',created_at=time.time(),ref_id=(result.get('ext_info') or {}).get('ref_idx','')))
+                    if self.active(*key,epoch):
+                        from external_activity import save_summary, touch_owner
+                        if getattr(reply,'activity_owner_at',0):
+                            touch_owner(actor,'qq',group['group_id'],direct=True,at=reply.activity_owner_at,
+                                        generation=reply.activity_generation)
+                        if getattr(reply,'activity_summary',''):
+                            diag['activity_saved']=save_summary(actor,'qq',group['group_id'],group.get('name') or '朋友群',
+                                reply.activity_summary,source_start=reply.activity_source_start,
+                                updated_at=time.time(),generation=reply.activity_generation)
                 if reply.memory and self.active(*key,epoch) and self.store.settings()['bring_home']:
                     await self.bring_memory_home(actor, group, event, reply, diag)
         except asyncio.CancelledError:
@@ -242,7 +255,7 @@ class Service:
             # Retry missing search vectors without regenerating or duplicating memories.
             from external_memories import retry_pending_index
             for actor in list(self.transports):
-                if not self.store.settings(actor)['enabled']:
+                if not self.store.settings(actor)['enabled'] or getattr(self.transports[actor], 'status', {}).get('retry_stopped'):
                     continue
                 try:
                     self.digest_actor = actor
@@ -254,7 +267,7 @@ class Service:
             for group in self.store.groups():
                 key = (group['actor'],group['group_id'])
                 cfg = self.store.settings(group['actor'])
-                if not cfg['enabled'] or not group['enabled'] or not group['memory_enabled'] or time.time()-self.digest_attempt.get(key,0)<600:
+                if not self.active(*key,cfg['epoch']) or not group['memory_enabled'] or time.time()-self.digest_attempt.get(key,0)<600:
                     continue
                 rows = self.store.history(*key,limit=60,after=group['digest_cursor'],oldest=True)
                 if len(rows)<12 or time.time()-rows[-1]['created_at']<120:
@@ -276,8 +289,8 @@ class Service:
                 summary, memories = await asyncio.wait_for(summarize_group(group['actor'],group,rows,self.store),120)
                 latest = self.store.group(*key)
                 if self.active(*key,epoch) and latest['memory_enabled']:
-                    for member,content,sources in memories:
-                        self.store.save_memory(*key,member,content,sources)
+                    for member,content,sources,merge_ids in memories:
+                        self.store.save_memory(*key,member,content,sources,merge_ids)
                     self.store.digest(*key,summary,rows[-1]['id'])
         except asyncio.CancelledError:
             raise

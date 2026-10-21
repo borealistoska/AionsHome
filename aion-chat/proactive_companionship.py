@@ -147,12 +147,18 @@ async def process_visible_message_event(event: dict) -> tuple[dict, bool]:
 
 async def claim_proactive_timer(schedule_id: str) -> bool:
     async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute('SELECT origin,created_at FROM schedules WHERE id=? AND type=?',
+                               (schedule_id,PROACTIVE_TYPE))
+        timer = await cur.fetchone()
+        from external_activity import last_interaction
+        import asyncio
+        outside_at = await asyncio.to_thread(last_interaction, _actor_id(timer[0])) if timer else 0
         cur = await db.execute(
             "DELETE FROM schedules WHERE id=? AND type=? AND status='active'",
             (schedule_id, PROACTIVE_TYPE),
         )
         await db.commit()
-        return bool(cur.rowcount)
+        return bool(cur.rowcount) and not (timer and outside_at > float(timer[1] or 0))
 
 
 async def proactive_status_payload() -> dict:

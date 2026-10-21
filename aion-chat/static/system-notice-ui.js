@@ -6,6 +6,18 @@
   'use strict';
 
   const SCHEDULE_NOTICE = /^(?:(?:⏰|📅|👀)\uFE0F?\s*)?(【[^】]+】设定了(?:闹铃|日程|监督))\s*[：:]/u;
+  const GAME_LOBBIES = new Map([['桌球', '/billiards'], ['斗地主', '/doudizhu']]);
+
+  function openMiniGame(event, game) {
+    const url = GAME_LOBBIES.get(game);
+    if (!url) return false;
+    event.preventDefault();
+    event.stopPropagation();
+    if (typeof window.openSubPage === 'function') window.openSubPage(url);
+    else if (window.parent !== window && typeof window.parent.openSubPage === 'function') window.parent.openSubPage(url);
+    else window.location.href = url;
+    return false;
+  }
 
   // Display-only labels, matching the controller's factory mode numbering.
   const TOY_STRETCH_NAMES = ['主体关闭', '慢速旋转伸缩', '中速旋转伸缩', '三短一长', '混合变速', '单次停顿脉冲', '快速停顿脉冲', '连续短脉冲'];
@@ -61,6 +73,34 @@
     const escapeHtml = typeof options?.escapeHtml === 'function'
       ? options.escapeHtml
       : fallbackEscape;
+    const gameInvite = (options?.attachments || []).find(item => item?.type === 'mini_game_invite');
+    if (gameInvite && GAME_LOBBIES.has(gameInvite.game)) {
+      return `<a class="mini-game-invite" href="${GAME_LOBBIES.get(gameInvite.game)}" onclick="return SystemNoticeUI.openMiniGame(event, '${gameInvite.game}')"><span aria-hidden="true">${gameInvite.game === '桌球' ? '🎱' : '🃏'}</span><span>${escapeHtml(gameInvite.actor_name || 'AI')}邀请你玩${escapeHtml(gameInvite.game)}</span><span class="mini-game-invite-go">进入游戏 →</span></a>`;
+    }
+    const tableGame = (options?.attachments || []).find(item => item?.type === 'table_game_result');
+    if (tableGame) {
+      return `<div class="billiards-result-card"><div class="billiards-result-heading"><span class="billiards-result-badge" aria-hidden="true">♧</span><strong>${escapeHtml(tableGame.title)}战报</strong><span>${tableGame.scope === 'table' ? '本场结算' : `第 ${escapeHtml(tableGame.round)} 轮`}</span></div><p class="billiards-result-outcome">${escapeHtml(tableGame.outcome)}</p>${(tableGame.lines || []).map(line => `<p class="billiards-result-detail">${escapeHtml(line)}</p>`).join('')}<p class="billiards-result-score">${escapeHtml(tableGame.note)}</p></div>`;
+    }
+    const doudizhu = (options?.attachments || []).find(item => item?.type === 'doudizhu_result');
+    if (doudizhu) {
+      const wallet = (doudizhu.walletLines || []).map(line => escapeHtml(line)).join(' · ');
+      return `<div class="billiards-result-card doudizhu-result-card">
+        <div class="billiards-result-heading"><span class="billiards-result-badge" aria-hidden="true">♠</span><strong>斗地主战报</strong><span>本局结算</span></div>
+        <p class="billiards-result-outcome">${escapeHtml(doudizhu.outcome)}</p>
+        <p class="billiards-result-detail">先出完：${escapeHtml(doudizhu.winnerName)} · 地主：${escapeHtml(doudizhu.landlordName)}</p>
+        <p class="billiards-result-detail">剩余手牌：${escapeHtml(doudizhu.remaining)}</p>
+        ${wallet ? `<p class="billiards-result-score">零钱结算：${wallet}</p>` : ''}
+      </div>`;
+    }
+    const rpsResult = (options?.attachments || []).find(item => item?.type === 'rps_result');
+    if (rpsResult) {
+      // Keep the full agreement in saved history and model context; shorten its display.
+      const prefix = `猜拳结果：本局约定「${rpsResult.topic}」。`;
+      const symbols = {'石头': '✊', '剪刀': '✌️', '布': '🖐️'};
+      const summary = (text.startsWith(prefix) ? text.slice(prefix.length) : text.replace(/^猜拳结果：/, ''))
+        .replace(/出了(石头|剪刀|布)/g, (_, hand) => '出了' + symbols[hand]);
+      return `<span class="system-notice-text">${escapeHtml(summary)}</span>`;
+    }
     const toyNotice = (options?.attachments || []).find(item => ['svakom_command_notice','ankni_command_notice'].includes(item?.type));
     if (toyNotice) {
       // Restyle existing saved notices too, without rewriting conversation history.
@@ -98,5 +138,5 @@
     return {content: content.trim(), noticeHtml};
   }
 
-  return {renderSystemNoticeContent, splitInlineToyCommands};
+  return {renderSystemNoticeContent, splitInlineToyCommands, openMiniGame};
 });

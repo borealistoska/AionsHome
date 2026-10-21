@@ -56,6 +56,7 @@ async function runInit({ initialConversations, lastConversationId = null, apiOve
     setTimeout,
     Notification: { permission: 'denied' },
     window: {},
+    document: { getElementById: id => elements.get(id) || null },
     localStorage: {
       getItem: key => storage.get(key) ?? null,
       setItem: (key, value) => storage.set(key, String(value)),
@@ -87,6 +88,9 @@ async function runInit({ initialConversations, lastConversationId = null, apiOve
     },
     renderModelSelect() {},
     loadProactiveCompanionshipStatus: async () => {},
+    privateIntimacyEnabled: () => false,
+    applyPrivateIntimacyState() {},
+    syncPrivateIntimacy() {},
     renderConvList() {},
     renderMessages() { context.renderCount = (context.renderCount || 0) + 1; },
     appliedHints: [],

@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>近期生活与待办</title>
 <link rel="stylesheet" href="/static/common.css">
-<link rel="stylesheet" href="/static/user-profile.css?v=20261009-5">
+<link rel="stylesheet" href="/static/user-profile.css?v=20261012-3">
 <script src="/static/theme.js?v=theme-20260606"></script>
 </head>
 <body>
@@ -29,8 +29,9 @@
       <button id="initializeProfile" class="quiet-button" type="button" hidden>整理最近一周 · 5.6 Sol</button>
       <p class="profile-error" id="error" hidden role="alert"></p>
       <details class="profile-preview"><summary>实际带给 AI 的近期清单</summary>
-        <p>全部有效条目按类别和时间带入。已结束或已淡出的内容不再发送，token 数为估算。</p>
-        <pre id="promptPreview"></pre></details>
+        <p>以下完整展示当前实际发送给 AI 的近期清单。已结束或已淡出的内容不再发送，token 数为估算。</p>
+        <pre id="promptPreview" tabindex="0" role="region" aria-label="实际发送给 AI 的近期清单全文" aria-describedby="previewScrollHint"></pre>
+        <div class="preview-scroll-controls"><p id="previewScrollHint" class="preview-scroll-hint">在框内上下滑动可查看全文</p><button id="previewEnd" class="quiet-button" type="button">查看末尾 ↓</button></div></details>
     </section>
     <section class="profile-state">
       <div class="section-heading"><h3>此刻活动</h3><button id="editState" class="edit-button" aria-label="编辑此刻活动" title="编辑此刻活动" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m16 3 5 5M4 20l4-1L21 6a2 2 0 0 0-3-3L5 16l-1 4Z"/></svg></button></div>
@@ -57,6 +58,6 @@
   </footer>
 </main>
 <script src="/static/common.js"></script>
-<script src="/static/user-profile.js?v=20261009-5"></script>
+<script src="/static/user-profile.js?v=20261012-3"></script>
 </body>
 </html>

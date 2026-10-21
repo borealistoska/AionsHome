@@ -16,7 +16,10 @@ final class TtsPlaybackCoordinator {
     private final ArrayDeque<Pending> pending = new ArrayDeque<>();
 
     void request(Object owner, Runnable start) {
-        if (active == owner) return;
+        if (active == owner) {
+            start.run(); // Continue the same message without yielding between its clips.
+            return;
+        }
         for (Pending item : pending) if (item.owner == owner) return;
         pending.addLast(new Pending(owner, start));
         startNext();

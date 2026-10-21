@@ -4,10 +4,34 @@ import subprocess
 import unittest
 from unittest.mock import AsyncMock, patch
 
+import httpx
+
 import taobao_native_mcp as bridge
 
 
 class NativeSearchTests(unittest.IsolatedAsyncioTestCase):
+    async def test_authorization_failure_survives_unavailable_cli_fallback(self):
+        def unauthorized(request):
+            return httpx.Response(401, json={
+                "jsonrpc": "2.0", "id": json.loads(request.content)["id"],
+                "error": {"code": -32000,
+                          "message": "Unauthorized: missing, invalid or expired access token",
+                          "data": None},
+            })
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(unauthorized))
+        response = subprocess.CompletedProcess([], 1, '', json.dumps({
+            "error": "应用未运行，请先执行 taobao-native start",
+        }, ensure_ascii=False))
+        with patch.object(bridge.httpx, "AsyncClient", return_value=client), \
+             patch.object(bridge.subprocess, "run", return_value=response):
+            with self.assertRaises(RuntimeError) as caught:
+                await bridge.search_products("桌面手机支架")
+        message = str(caught.exception)
+        self.assertIn("401", message)
+        self.assertIn("授权", message)
+        self.assertIn("应用未运行", message)
+
     async def test_search_uses_a2a_without_touching_native_cli(self):
         products = [{"itemId": "12345", "productUrl": "https://item.taobao.com/item.htm?id=12345"}]
         with patch.object(bridge, "_search_a2a", new=AsyncMock(

@@ -12,6 +12,7 @@ import android.webkit.CookieManager;
 import org.json.JSONObject;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Objects;
 
 /** Owns background speech without relying on a running WebView or its callbacks. */
 final class BackgroundTtsPlayer {
@@ -22,6 +23,8 @@ final class BackgroundTtsPlayer {
     private MediaPlayer player;
     private LoudnessEnhancer enhancer;
     private Runnable prepareTimeout;
+    private Object speechOwner;
+    private String speechMessageId;
 
     BackgroundTtsPlayer(Context context, Handler handler, Runnable stateChanged) {
         this.context = context;
@@ -48,7 +51,15 @@ final class BackgroundTtsPlayer {
     void receive(String type, JSONObject data, String baseUrl) {
         if (data == null) return;
         String id = data.optString("msg_id", "");
-        if ("tts_chunk".equals(type)) {
+        if ("tts_cancel".equals(type)) {
+            if (queue.cancel(id)) {
+                release();
+                releaseSpeech();
+            }
+            stateChanged.run();
+            playNext();
+            return;
+        } else if ("tts_chunk".equals(type)) {
             String url = TtsAudioUrlResolver.resolve(baseUrl, data.optString("url", ""));
             if (url == null) return;
             queue.offer(id, data.optInt("seq", -1), url);
@@ -63,10 +74,16 @@ final class BackgroundTtsPlayer {
     private void playNext() {
         if (player != null) return;
         String url = queue.next();
+        String messageId = queue.currentMessageId();
+        if (!Objects.equals(speechMessageId, messageId)) releaseSpeech();
         if (url == null) { stateChanged.run(); return; }
+        if (speechOwner == null) {
+            speechOwner = new Object();
+            speechMessageId = messageId;
+        }
         MediaPlayer current = new MediaPlayer();
         player = current;
-        TtsPlaybackCoordinator.shared.request(current, () -> prepare(current, url));
+        TtsPlaybackCoordinator.shared.request(speechOwner, () -> prepare(current, url));
     }
 
     private void prepare(MediaPlayer current, String url) {
@@ -121,6 +138,7 @@ final class BackgroundTtsPlayer {
     void stop() {
         release();
         queue.clear();
+        releaseSpeech();
         stateChanged.run();
     }
 
@@ -137,7 +155,13 @@ final class BackgroundTtsPlayer {
         player = null;
         if (released != null) {
             released.release();
-            TtsPlaybackCoordinator.shared.release(released);
         }
+    }
+
+    private void releaseSpeech() {
+        Object released = speechOwner;
+        speechOwner = null;
+        speechMessageId = null;
+        if (released != null) TtsPlaybackCoordinator.shared.release(released);
     }
 }

@@ -61,7 +61,7 @@ def _is_paragraph_loop(text: str) -> bool:
                for match in _PARAGRAPH_LOOP.finditer(text))
 
 _BRACKET_COMMAND_PREFIXES = tuple(value.upper() for value in (
-    "[语音",
+    "[语音", "[猜拳", "[小游戏",
     "[WEB_SEARCH", "[WEB_EXTRACT", "[LOUNGE_VISIT", "[MUSIC", "[MOMENT",
     "[MEMORY", "[许愿", "[查看动态", "[SELFIE", "[DRAW", "[SONG",
     "[POI_SEARCH", "[TOY", "[SVAKOM", "[ANKNI", "[PET", "[HOME", "[BAND_VIBRATE", "[BAND_NOTE",
@@ -334,6 +334,7 @@ async def consume_safe_live_stream(
     on_commit: Callable[[str], object | Awaitable[object]],
     *,
     clock: Callable[[], float] = time.monotonic,
+    idle_timeout: float | None = None,
 ) -> StreamSafetyResult:
     """Consume typed model text and expose only protocol-checked visible text."""
     guard = SafeLiveStreamGuard()
@@ -370,7 +371,7 @@ async def consume_safe_live_stream(
         try:
             chunk = await asyncio.wait_for(
                 iterator.__anext__(),
-                min(SAFE_LIVE_IDLE_TIMEOUT, remaining),
+                min(SAFE_LIVE_IDLE_TIMEOUT if idle_timeout is None else idle_timeout, remaining),
             )
         except StopAsyncIteration:
             break

@@ -5,6 +5,7 @@ from toy_profiles import allow_legacy as allow_legacy_toy, state as toy_selectio
 
 import json, time, asyncio, re, shutil
 from datetime import datetime
+from dataclasses import replace
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -20,7 +21,7 @@ from reply_timing import model_started
 from generation_control import (current_generation, cancellable, cancel_generation, generation_status, GenerationQueue, spawn_generation_task)
 from cancelled_reply import save_cancelled_replies
 from active_window_state import record_aion_private_active
-from ai_providers import stream_ai, CLI_STATUS_PREFIX, with_current_device_context
+from ai_providers import stream_ai, CLI_STATUS_PREFIX, with_current_device_context, model_chat_idle_timeout
 from memory import recall_memories, instant_digest, fetch_source_details, build_surfacing_memories, get_embedding, _pack_embedding, format_recalled_memories_for_prompt
 from camera import cam, CAM_CHECK_CMD, perform_cam_check
 from activity import get_activity_summary_for_prompt, get_user_dynamics_for_prompt
@@ -33,6 +34,7 @@ from stream_reply import resolve_stream_failure
 from widget_control import process_widget_control_commands
 from stream_safety import (
     CHAT_STREAM_POLICY,
+    StreamActivity,
     StreamSafetyResult,
     consume_safe_stream,
 )
@@ -47,11 +49,20 @@ from wechat_bridge import (
 from band_commands import process_band_vibration, with_band_vibration_attachment
 from hug_pillow_commands import process_hug_pillow_commands
 from capabilities import process_pat_commands
+from game_invites import process_game_invites
+from rps import process_rps_commands, notification_message, attach_to_message, validate_send, reply_round_id
 from app_supervision_ai import (
     queue_app_supervision_reply_command,
     broadcast_app_supervision_command,
 )
 from capabilities import is_capability_enabled
+from intimacy_skill import (
+    build_play_prompt,
+    get_card_preview as get_intimacy_preview,
+    get_state as get_intimacy_state,
+    set_enabled as set_intimacy_enabled,
+    start_session as start_intimacy_session,
+)
 from active_memory_search import (
     continue_memory_search,
     MemorySearchRequest,
@@ -175,8 +186,10 @@ async def _insert_private_ability_block(
     inject_offset: int,
     *,
     user_name: str,
+    ai_name: str,
     model_key: str,
     whisper_mode: bool = False,
+    conv_id: str = "",
 ) -> int:
     ability_block = await build_ability_block(
         user_name,
@@ -188,6 +201,23 @@ async def _insert_private_ability_block(
         history.insert(cap_idx + inject_offset, {"role": "user", "content": ability_block})
         history.insert(cap_idx + inject_offset + 1, {"role": "assistant", "content": "好的，需要时我会使用这些指令。"})
         inject_offset += 2
+
+    if conv_id:
+        play_prompt = build_play_prompt(
+            "private",
+            conv_id,
+            "private",
+            actor="aion",
+            user_name=user_name,
+            actor_names=(ai_name, ""),
+        )
+        if play_prompt:
+            history.insert(cap_idx + inject_offset, {"role": "user", "content": play_prompt})
+            history.insert(
+                cap_idx + inject_offset + 1,
+                {"role": "assistant", "content": "收到，我会顺着当前上下文自然发挥。"},
+            )
+            inject_offset += 2
 
     before_count = len(history)
     history[:] = with_current_device_context(
@@ -292,7 +322,9 @@ async def _consume_chat_stream(
                 tts_streamer,
             )
 
-    result = await consume_safe_stream(source, CHAT_STREAM_POLICY, on_commit)
+    idle_timeout = model_chat_idle_timeout(model_key)
+    policy = replace(CHAT_STREAM_POLICY, idle_timeout=idle_timeout) if idle_timeout is not None else CHAT_STREAM_POLICY
+    result = await consume_safe_stream(source, policy, on_commit)
     visible_tail = lounge_filter.feed(stream_filter.flush()) + lounge_filter.flush()
     if visible_tail:
         visible_text += visible_tail
@@ -335,7 +367,7 @@ async def _consume_safe_chat_stream(
                 tts_streamer,
             )
 
-    result = await consume_safe_live_stream(source, on_commit)
+    result = await consume_safe_live_stream(source, on_commit, idle_timeout=model_chat_idle_timeout(model_key))
     if result.stop_reason is None:
         visible_tail = lounge_filter.feed(stream_filter.flush()) + lounge_filter.flush()
         if visible_tail:
@@ -1019,8 +1051,14 @@ class ConvUpdate(BaseModel):
     title: Optional[str] = None
     model: Optional[str] = None
 
+
+class IntimacyToggle(BaseModel):
+    enabled: bool
+
 class MsgCreate(BaseModel):
     content: str
+    rps_event_id: str = ""
+    rps_round_id: str = ""
     context_limit: int = 30
     attachments: List[Any] = []
     whisper_mode: bool = False
@@ -1050,6 +1088,29 @@ class MsgEditResend(BaseModel):
     client_id: str = ""
 
 # ── 对话 CRUD ─────────────────────────────────────
+@router.get("/api/conversations/{conv_id}/intimacy")
+async def get_private_intimacy(conv_id: str):
+    return get_intimacy_state("private", conv_id)
+
+
+@router.get("/api/conversations/{conv_id}/intimacy/preview")
+async def get_private_intimacy_preview(conv_id: str):
+    return get_intimacy_preview("private", conv_id)
+
+
+@router.put("/api/conversations/{conv_id}/intimacy")
+async def update_private_intimacy(conv_id: str, body: IntimacyToggle):
+    return set_intimacy_enabled("private", conv_id, body.enabled)
+
+
+@router.post("/api/conversations/{conv_id}/intimacy/start")
+async def start_private_intimacy(conv_id: str):
+    try:
+        return start_intimacy_session("private", conv_id, "private")
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
 @router.get("/api/conversations")
 async def list_conversations():
     async with get_db() as db:
@@ -1396,8 +1457,10 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
         cap_idx,
         inject_offset,
         user_name=user_name,
+        ai_name=ai_name,
         model_key=model_key,
         whisper_mode=body.whisper_mode,
+        conv_id=conv_id,
     )
 
     # RAG 记忆召回
@@ -1511,6 +1574,7 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
                 async for chunk in stream_ai(history, model_key, usage_meta, max_tokens=body.max_tokens, cancel_event=cancel_event):
                     if chunk.startswith(CLI_STATUS_PREFIX):
                         await _q.put({"type": "cli_status", "text": chunk[len(CLI_STATUS_PREFIX):]})
+                        yield StreamActivity()
                         continue
                     _mark_first_text(chunk)
                     yield chunk
@@ -1559,6 +1623,14 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
                 full_text = MUSIC_CMD_PATTERN.sub("", full_text).strip()
 
             full_text = await process_pat_commands(
+                full_text, source_type="private", source_id=conv_id,
+                sender="aion", source_msg_id=ai_msg_id,
+            )
+            full_text = await process_rps_commands(
+                full_text, source_type="private", source_id=conv_id,
+                sender="aion", source_msg_id=ai_msg_id,
+            )
+            full_text = await process_game_invites(
                 full_text, source_type="private", source_id=conv_id,
                 sender="aion", source_msg_id=ai_msg_id,
             )
@@ -1870,6 +1942,7 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
 @router.post("/api/conversations/{conv_id}/send")
 @cancellable("private", _save_cancelled_reply)
 async def send_message(conv_id: str, body: MsgCreate):
+    await validate_send('private', conv_id, body.rps_round_id)
     # 记录最后发消息的客户端 ID
     if body.client_id:
         manager.set_last_sender(body.client_id)
@@ -1877,56 +1950,66 @@ async def send_message(conv_id: str, body: MsgCreate):
     now = time.time()
     msg_id = f"msg_{int(now*1000)}"
 
-    user_atts = await _with_link_previews(body.content, body.attachments)
-    att_json = json.dumps(user_atts, ensure_ascii=False) if user_atts else "[]"
-    dedupe_key = build_message_dedupe_key(
-        target_type="private",
-        target_id=conv_id,
-        sender="user",
-        content=body.content,
-        attachments=body.attachments,
-    )
-    duplicate_msg = None
-    async with get_db() as db:
-        db.row_factory = __import__('aiosqlite').Row
-        duplicate = await reserve_message_ingress(
-            db,
-            dedupe_key=dedupe_key,
+    if body.rps_event_id:
+        user_msg, _ = await notification_message("private", conv_id, body.rps_event_id)
+        msg_id, now = user_msg["id"], user_msg["created_at"]
+        user_atts = user_msg["attachments"]
+        body.content = user_msg["content"]
+        duplicate_msg = None
+    else:
+        user_atts = await _with_link_previews(body.content, body.attachments)
+        att_json = json.dumps(user_atts, ensure_ascii=False) if user_atts else "[]"
+        dedupe_key = build_message_dedupe_key(
             target_type="private",
             target_id=conv_id,
-            message_id=msg_id,
-            now=now,
+            sender="user",
+            content=body.content,
+            attachments=body.attachments + ([{'type': 'rps_dedupe', 'round_id': body.rps_round_id}] if body.rps_round_id else []),
         )
-        if duplicate:
-            cur = await db.execute("SELECT * FROM messages WHERE id=?", (duplicate.get("message_id", ""),))
-            row = await cur.fetchone()
-            if row:
-                duplicate_msg = _message_dict_from_row(row)
-            else:
-                await db.execute("DELETE FROM message_ingress_dedupe WHERE dedupe_key=?", (dedupe_key,))
-                duplicate = await reserve_message_ingress(
-                    db,
-                    dedupe_key=dedupe_key,
-                    target_type="private",
-                    target_id=conv_id,
-                    message_id=msg_id,
-                    now=now,
-                )
-        if not duplicate_msg:
-            await db.execute(
-                "INSERT INTO messages (id, conv_id, role, content, created_at, attachments) VALUES (?,?,?,?,?,?)",
-                (msg_id, conv_id, "user", body.content, now, att_json)
+        duplicate_msg = None
+        async with get_db() as db:
+            db.row_factory = __import__('aiosqlite').Row
+            duplicate = await reserve_message_ingress(
+                db,
+                dedupe_key=dedupe_key,
+                target_type="private",
+                target_id=conv_id,
+                message_id=msg_id,
+                now=now,
             )
-            await db.execute("UPDATE conversations SET updated_at=? WHERE id=?", (now, conv_id))
-        await db.commit()
+            if duplicate:
+                cur = await db.execute("SELECT * FROM messages WHERE id=?", (duplicate.get("message_id", ""),))
+                row = await cur.fetchone()
+                if row:
+                    duplicate_msg = _message_dict_from_row(row)
+                else:
+                    await db.execute("DELETE FROM message_ingress_dedupe WHERE dedupe_key=?", (dedupe_key,))
+                    duplicate = await reserve_message_ingress(
+                        db,
+                        dedupe_key=dedupe_key,
+                        target_type="private",
+                        target_id=conv_id,
+                        message_id=msg_id,
+                        now=now,
+                    )
+            if not duplicate_msg:
+                await db.execute(
+                    "INSERT INTO messages (id, conv_id, role, content, created_at, attachments) VALUES (?,?,?,?,?,?)",
+                    (msg_id, conv_id, "user", body.content, now, att_json)
+                )
+                await db.execute("UPDATE conversations SET updated_at=? WHERE id=?", (now, conv_id))
+            await db.commit()
 
     await record_aion_private_active()
     if duplicate_msg:
         await manager.broadcast({"type": "msg_created", "data": duplicate_msg})
         return _done_streaming_response()
 
-    user_msg = {"id": msg_id, "conv_id": conv_id, "role": "user", "content": body.content,
-                "created_at": now, "attachments": user_atts}
+    if not body.rps_event_id:
+        user_msg = {"id": msg_id, "conv_id": conv_id, "role": "user", "content": body.content,
+                    "created_at": now, "attachments": user_atts}
+        user_msg, _ = await attach_to_message('private', conv_id, user_msg, body.rps_round_id)
+        user_atts = user_msg['attachments']
     await manager.broadcast({"type": "msg_created", "data": user_msg})
 
     # 用户发消息时重置哨兵巡逻计时器
@@ -1998,8 +2081,10 @@ async def send_message(conv_id: str, body: MsgCreate):
         cap_idx,
         inject_offset,
         user_name=user_name,
+        ai_name=ai_name,
         model_key=model_key,
         whisper_mode=body.whisper_mode,
+        conv_id=conv_id,
     )
 
     # 1.5 注入剧场·场外求助上下文（如果有）
@@ -2176,6 +2261,7 @@ async def send_message(conv_id: str, body: MsgCreate):
                 async for chunk in stream_ai(history, model_key, usage_meta, max_tokens=body.max_tokens, cancel_event=cancel_event):
                     if chunk.startswith(CLI_STATUS_PREFIX):
                         await _q.put({"type": "cli_status", "text": chunk[len(CLI_STATUS_PREFIX):]})
+                        yield StreamActivity()
                         continue
                     _mark_first_text(chunk)
                     yield chunk
@@ -2226,6 +2312,14 @@ async def send_message(conv_id: str, body: MsgCreate):
                 full_text = MUSIC_CMD_PATTERN.sub("", full_text).strip()
 
             full_text = await process_pat_commands(
+                full_text, source_type="private", source_id=conv_id,
+                sender="aion", source_msg_id=ai_msg_id,
+            )
+            full_text = await process_rps_commands(
+                full_text, source_type="private", source_id=conv_id,
+                sender="aion", source_msg_id=ai_msg_id,
+            )
+            full_text = await process_game_invites(
                 full_text, source_type="private", source_id=conv_id,
                 sender="aion", source_msg_id=ai_msg_id,
             )
@@ -2586,7 +2680,11 @@ async def send_message(conv_id: str, body: MsgCreate):
                     pass
             await _q.put({"type": "done"})
 
-    spawn_generation_task(_bg_generate())
+    token = reply_round_id.set(body.rps_round_id or reply_round_id.get())
+    try:
+        spawn_generation_task(_bg_generate())
+    finally:
+        reply_round_id.reset(token)
 
     async def generate():
         """SSE 转发：从队列读取事件转发给客户端。客户端断开时生成器关闭，后台任务不受影响。"""
@@ -3546,8 +3644,10 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
         cap_idx,
         inject_offset,
         user_name=user_name,
+        ai_name=ai_name,
         model_key=model_key,
         whisper_mode=whisper_mode,
+        conv_id=conv_id,
     )
 
     # 2. 本地前置路由 + 记忆召回（fast_mode 时跳过）
@@ -3673,6 +3773,7 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
                 async for chunk in stream_ai(history, model_key, usage_meta, temperature, max_tokens=max_tokens, cancel_event=cancel_event):
                     if chunk.startswith(CLI_STATUS_PREFIX):
                         await _q.put({"type": "cli_status", "text": chunk[len(CLI_STATUS_PREFIX):]})
+                        yield StreamActivity()
                         continue
                     _mark_first_text(chunk)
                     yield chunk
@@ -3723,6 +3824,14 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
                 full_text = MUSIC_CMD_PATTERN.sub("", full_text).strip()
 
             full_text = await process_pat_commands(
+                full_text, source_type="private", source_id=conv_id,
+                sender="aion", source_msg_id=ai_msg_id,
+            )
+            full_text = await process_rps_commands(
+                full_text, source_type="private", source_id=conv_id,
+                sender="aion", source_msg_id=ai_msg_id,
+            )
+            full_text = await process_game_invites(
                 full_text, source_type="private", source_id=conv_id,
                 sender="aion", source_msg_id=ai_msg_id,
             )

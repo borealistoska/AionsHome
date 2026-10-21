@@ -12,6 +12,7 @@ from database import get_db
 from album import save_generated_image
 from model_json import extract_json_object
 from ws import manager
+from system_logs import logged_ai_call
 
 
 # ── AI 判断是否送礼 + 生图 + 入库 ─────────────────
@@ -145,6 +146,7 @@ async def send_gift_from_decision(
 
 
 # ── 硅基流动 Kolors 生图 ──────────────────────────
+@logged_ai_call("gift_image", model="Kwai-Kolors/Kolors")
 async def _generate_image(prompt: str, source_identity: str = "") -> str | None:
     """调用硅基流动 Kwai-Kolors/Kolors 生成图片，下载保存到本地，返回相对路径"""
     api_key = get_key("siliconflow")

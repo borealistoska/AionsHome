@@ -16,6 +16,7 @@ from config import load_worldbook, SETTINGS, get_key, MODELS
 from database import get_db
 from ws import manager
 from mcp_client import mcp_manager
+from system_logs import logged_ai_call
 
 logger = logging.getLogger("playground")
 
@@ -156,6 +157,7 @@ def _trim_messages(messages: list, max_chars: int = 40000) -> list:
 
 
 # ── 独立 AI 调用（带 tools 的 OpenAI 兼容格式）──
+@logged_ai_call("playground_tools")
 async def _call_ai_with_tools(messages: list, tools: list, model_cfg: dict,
                                cancel_event: asyncio.Event | None = None) -> dict:
     """
@@ -206,6 +208,7 @@ async def _call_ai_with_tools(messages: list, tools: list, model_cfg: dict,
 
 
 # ── 流式文本 AI 调用（最终回复用）──
+@logged_ai_call("playground_text")
 async def _stream_ai_text(messages: list, model_cfg: dict, cancel_event: asyncio.Event | None = None):
     """
     流式调用 AI（不带 tools），用于生成最终文字回复。

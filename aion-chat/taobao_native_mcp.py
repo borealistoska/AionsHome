@@ -78,6 +78,11 @@ async def _search_a2a(keyword: str) -> dict:
     async with httpx.AsyncClient(trust_env=False, timeout=30) as client:
         response = await client.post(A2A_SEARCH_URL, json=request,
                                      headers={"Accept": "application/json"})
+        if response.status_code in (401, 403):
+            raise RuntimeError(
+                f"淘宝官方搜索授权失败（HTTP {response.status_code}），"
+                "请检查 A2A 访问令牌及调用权限"
+            )
         response.raise_for_status()
     payload = response.json()
     if not isinstance(payload, dict) or payload.get("id") != request_id:
@@ -137,10 +142,15 @@ async def search_products(keyword: str, type: str = "all", sourceApp: str = "Aio
         raise ValueError("搜索词应为 1 到 120 字")
     try:
         return await _search_a2a(keyword)
-    except (httpx.HTTPError, json.JSONDecodeError, RuntimeError):
+    except (httpx.HTTPError, json.JSONDecodeError, RuntimeError) as a2a_error:
         # Taobao 2.x has no A2A service but still supports the verified CLI.
         # This path uses system Node and never launches Electron in Node mode.
-        return await _search_cli(keyword)
+        try:
+            return await _search_cli(keyword)
+        except (RuntimeError, OSError, subprocess.SubprocessError) as cli_error:
+            raise RuntimeError(
+                f"A2A 搜索失败：{a2a_error}；本地兼容搜索也失败：{cli_error}"
+            ) from cli_error
 
 
 if __name__ == "__main__":

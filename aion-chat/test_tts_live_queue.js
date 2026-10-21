@@ -4,6 +4,57 @@ const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
 
+test('private and room messages retain speech ownership across synthesis gaps', async () => {
+  for (const room of [false, true]) {
+    const events = [];
+    const audio = {
+      beginSpeech() { if (!this.held) { this.held = true; events.push('begin'); } },
+      endSpeech() { if (this.held) { this.held = false; events.push('end'); } },
+      play() { events.push(this.src); return Promise.resolve(); },
+      pause() {},
+    };
+    const context = vm.createContext({
+      ttsEnabled: true, ttsPlaying: false, ttsChunkQueues: {}, ttsPlayOrder: [],
+      ttsAudio: audio, ttsManualStop: false, ttsSuppressedMsgIds: new Set(),
+      ttsAcceptAfter: 0, _clientId: 'phone', voiceInCall: false, window: {},
+      shouldAcceptTTSMsg: () => true, clearTTSResumeTimer() {},
+      _notifyVoiceCallPrivateTTSStart() {}, _notifyVoiceCallPrivateTTSEnd() {},
+      crCreateHiddenAudio: () => audio, crGetParentAudio: () => null,
+      crAmbientPauseForTts() {}, crAmbientResumeAfterTts() {},
+      crNotifyVoiceCallTTSStart() {}, crNotifyVoiceCallTTSChunkEnd() {}, crNotifyVoiceCallTTSEnd() {},
+    });
+    const source = fs.readFileSync(path.join(__dirname, 'static', room ? 'chatroom.js' : 'chat.js'), 'utf8');
+    const start = source.indexOf(room ? 'const _ttsEngine = (function()' : 'function enqueueTTSChunk(');
+    const end = source.indexOf(room ? 'let crTtsAudio' : '// 重听 TTS 音频', start);
+    vm.runInContext(source.slice(start, end), context);
+    const enqueue = room
+      ? (...args) => vm.runInContext('_ttsEngine', context).enqueue(...args)
+      : (...args) => context.enqueueTTSChunk(...args);
+    const finish = room
+      ? id => vm.runInContext('_ttsEngine', context).finish(id)
+      : id => context.finishTTSForMsg(id);
+    enqueue('message', 0, '/message-0');
+    enqueue('later', 0, '/later-0');
+    audio.onended();
+    assert.deepEqual(events, ['begin', '/message-0'], room ? 'room gap' : 'private gap');
+    enqueue('message', 1, '/message-1');
+    finish('message');
+    assert.deepEqual(events, ['begin', '/message-0', '/message-1']);
+    audio.onended();
+    assert.deepEqual(events, ['begin', '/message-0', '/message-1', 'end', 'begin', '/later-0']);
+    finish('later');
+    audio.onended();
+    assert.equal(events.at(-1), 'end');
+
+    enqueue('interrupted', 0, '/interrupted');
+    audio.onended();
+    assert.equal(audio.held, true);
+    if (room) vm.runInContext('_ttsEngine.connectionLost()', context);
+    else context.finishPendingTTS();
+    assert.equal(audio.held, false, 'a dropped socket must release an unfinished message');
+  }
+});
+
 test('an abnormal reply suppresses late audio and stops its queued playback', () => {
   for (const [file, name, orderName, suppressName, stopName] of [
     ['chat.js', 'cancelTTSMessage', 'ttsPlayOrder', 'suppressTTSMsg', 'stopLiveTTSQueue'],

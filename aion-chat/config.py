@@ -256,6 +256,9 @@ ANTIGRAVITY_MODELS_PATH = DATA_DIR / "antigravity_models.json"
 # AGY 模型开关：只展示未注释的官方 slug。取消注释后重启服务器、刷新页面。
 # antigravity_models.json 是自动生成的缓存，不要在那里修改开关。
 ANTIGRAVITY_ENABLED_MODELS = (
+    "gemini-4-argon-medium",
+    "gemini-4-argon-high",
+    "gemini-4-argon-low",
     "gemini-3.8-flash-high",
     # "gemini-3.8-flash-medium",
     # "gemini-3.8-flash-low",
@@ -277,6 +280,10 @@ ANTIGRAVITY_ENABLED_MODELS = (
 )
 
 
+def antigravity_model_supports_vision(model: str) -> bool:
+    return model.startswith(("gemini-", "claude-"))
+
+
 def _read_antigravity_models() -> dict:
     try:
         rows = json.loads(ANTIGRAVITY_MODELS_PATH.read_text(encoding="utf-8"))
@@ -285,7 +292,8 @@ def _read_antigravity_models() -> dict:
     if not isinstance(rows, dict):
         return {}
     return {
-        key: value for key, value in rows.items()
+        key: {**value, "vision": antigravity_model_supports_vision(value.get("model", ""))}
+        for key, value in rows.items()
         if isinstance(key, str) and key.startswith("AGY · ")
         and isinstance(value, dict) and value.get("provider") == "antigravity_cli"
         and value.get("model") in ANTIGRAVITY_ENABLED_MODELS
@@ -298,6 +306,7 @@ BUILTIN_MODELS = {
     "硅基GLM-5.2":      {"provider": "siliconflow", "model": "zai-org/GLM-5.2", "vision": False},
     "硅基DSv4pro":      {"provider": "siliconflow", "model": "deepseek-ai/DeepSeek-V4-Pro", "vision": False},
     "官Gem3.8flash":  {"provider": "gemini", "model": "gemini-3.8-flash", "vision": True},
+    "官4-Argon":  {"provider": "gemini", "model": "gemini-4-argon", "vision": True},
     # "官Gem3.1pro":  {"provider": "gemini", "model": "gemini-3.1-pro-preview", "vision": True},
     # "Codex-5.5":            {"provider": "codex_cli",  "model": "gpt-5.5", "vision": True},
     # "Codex-Astra":    {"provider": "codex_cli",  "model": "gpt-6-astra", "vision": True, "transport_mode": "safe_live"},
@@ -421,7 +430,8 @@ def refresh_custom_models() -> None:
 
 def replace_antigravity_models(models: dict, *, persist: bool = False) -> None:
     """Apply the AGY switches to the official catalog and its saved cache."""
-    models = {key: value for key, value in models.items()
+    models = {key: {**value, "vision": antigravity_model_supports_vision(value.get("model", ""))}
+              for key, value in models.items()
               if value.get("model") in ANTIGRAVITY_ENABLED_MODELS}
     for key in ANTIGRAVITY_MODELS:
         MODELS.pop(key, None)

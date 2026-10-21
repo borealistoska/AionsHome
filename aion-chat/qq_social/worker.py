@@ -13,9 +13,9 @@ from fastapi import FastAPI, Request, HTTPException
 from .service import Service
 from .store import Store
 from .transport import BotTransport
+from qq_social_process import PORT
 
 DIRECTORY = Path(__file__).resolve().parents[1] / 'data' / 'qq_social'
-PORT = 8788
 
 
 def create_app(directory=DIRECTORY):
@@ -25,14 +25,30 @@ def create_app(directory=DIRECTORY):
     service = Service(store, transports)
     token = (directory/'management.key').read_text(encoding='utf8').strip()
     bot_jobs, applied = {}, {}
+    digest_job = None
     reload_lock = asyncio.Lock()
     reloading = False
 
-    async def reload_credentials():
-        nonlocal applied, reloading
+    async def run_bot(actor, bot):
+        nonlocal digest_job
+        await bot.run()
+        (directory/(actor+'.paused')).touch()
+        service.cancel_pending(actor)
+        await bot.close()
+        if all((directory/(role+'.paused')).exists() for role in transports):
+            (directory/'connection.paused').touch()
+            service.cancel_pending()
+            if digest_job:
+                digest_job.cancel()
+
+    async def reload_credentials(reconnect=False):
+        nonlocal applied, reloading, digest_job
         async with reload_lock:
             credentials = json.loads((directory/'credentials.json').read_text(encoding='utf8'))
-            changed = [actor for actor in ('aion','connor') if applied.get(actor)!=credentials.get(actor)]
+            changed = [actor for actor in ('aion','connor') if applied.get(actor)!=credentials.get(actor)
+                       or (reconnect and actor in credentials and
+                           (actor not in bot_jobs or bot_jobs[actor].done()
+                            or getattr(transports.get(actor),'status',{}).get('retry_stopped')))]
             if not changed:
                 return
             reloading = True
@@ -51,25 +67,36 @@ def create_app(directory=DIRECTORY):
                 for actor in changed:
                     if actor not in credentials:
                         continue
+                    if reconnect:
+                        (directory/(actor+'.paused')).unlink(missing_ok=True)
                     async def event(kind,data,role=actor):
                         if not reloading:
                             await service.ingest(role,kind,data)
                     bot = transports[actor] = BotTransport(credentials[actor],event)
-                    bot_jobs[actor] = asyncio.create_task(bot.run())
+                    if (directory/'connection.paused').exists() or (directory/(actor+'.paused')).exists():
+                        bot.status.update(state='已停止 · 手动连接', retry_stopped=True)
+                    else:
+                        bot_jobs[actor] = asyncio.create_task(run_bot(actor, bot))
                     service.last_error.pop(actor,None)
                 applied = credentials
+                if transports and all(getattr(bot,'status',{}).get('retry_stopped') for bot in transports.values()):
+                    (directory/'connection.paused').touch()
+                if any(not job.done() for job in bot_jobs.values()):
+                    if digest_job is not None and digest_job.cancelling():
+                        await asyncio.gather(digest_job, return_exceptions=True)
+                    if digest_job is None or digest_job.done():
+                        digest_job = asyncio.create_task(service.digest_groups())
             finally:
                 reloading = False
 
     @asynccontextmanager
     async def lifespan(app):
         await reload_credentials()
-        digest_job = asyncio.create_task(service.digest_groups())
         (directory/'worker.pid').write_text(str(os.getpid()),encoding='ascii')
         try:
             yield
         finally:
-            jobs = [*bot_jobs.values(),digest_job]
+            jobs = [*bot_jobs.values(), *([digest_job] if digest_job else [])]
             for job in jobs:
                 job.cancel()
             await service.close()
@@ -88,6 +115,12 @@ def create_app(directory=DIRECTORY):
     @app.post('/reload-credentials')
     async def reload_bots():
         await reload_credentials()
+        return {'ok':True}
+
+    @app.post('/reconnect')
+    async def reconnect_bots():
+        (directory/'connection.paused').unlink(missing_ok=True)
+        await reload_credentials(reconnect=True)
         return {'ok':True}
 
     @app.get('/status')

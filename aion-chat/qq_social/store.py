@@ -69,6 +69,9 @@ class Store:
             columns = {r[1] for r in db.execute('PRAGMA table_info(messages)')}
             if 'attachments' not in columns:
                 db.execute("ALTER TABLE messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'")
+            columns = {r[1] for r in db.execute('PRAGMA table_info(memories)')}
+            if 'archive_reason' not in columns:
+                db.execute("ALTER TABLE memories ADD COLUMN archive_reason TEXT NOT NULL DEFAULT ''")
 
     @contextmanager
     def db(self):
@@ -179,13 +182,45 @@ class Store:
                 db.execute('UPDATE members SET is_owner=0 WHERE actor=? AND group_id=?', (actor, group_id))
             db.execute('UPDATE members SET alias=?,is_owner=? WHERE actor=? AND group_id=? AND member_id=?', (str(alias)[:80], bool(is_owner), actor, group_id, member_id))
 
-    def save_memory(self, actor, group_id, member_id, content, sources):
+    def save_memory(self, actor, group_id, member_id, content, sources, merge_ids=()):
+        """Merge only this member's facts; retain original rows and every source."""
+        content = content.strip()
+        if not content or len(content) > 800:
+            raise ValueError('Memory must contain 1..800 characters')
         with self.db() as db:
-            db.execute('INSERT OR IGNORE INTO memories(actor,group_id,member_id,content,sources,created_at) VALUES(?,?,?,?,?,?)', (actor,group_id,member_id,content[:800],json.dumps(sources),time.time()))
+            db.execute('BEGIN IMMEDIATE')
+            originals = []
+            for memory_id in dict.fromkeys(merge_ids):
+                row = db.execute("SELECT * FROM memories WHERE id=? AND actor=? AND group_id=? AND member_id=? AND archive_reason=''",
+                                 (memory_id,actor,group_id,member_id)).fetchone()
+                if row is None:
+                    raise ValueError('Merge target is not an active memory of this member')
+                originals.append(row)
+            existing = db.execute('SELECT * FROM memories WHERE actor=? AND group_id=? AND member_id=? AND content=?',
+                                  (actor,group_id,member_id,content)).fetchone()
+            evidence = []
+            for row in originals + ([existing] if existing else []):
+                evidence.extend(json.loads(row['sources']))
+            evidence = json.dumps(list(dict.fromkeys(evidence + list(sources))),ensure_ascii=False)
+            if existing:
+                memory_id = existing['id']
+                db.execute("UPDATE memories SET sources=?,archive_reason='' WHERE id=?",(evidence,memory_id))
+            else:
+                memory_id = db.execute('INSERT INTO memories(actor,group_id,member_id,content,sources,created_at) VALUES(?,?,?,?,?,?)',
+                                       (actor,group_id,member_id,content,evidence,time.time())).lastrowid
+            for row in originals:
+                if row['id'] != memory_id:
+                    db.execute('UPDATE memories SET archive_reason=? WHERE id=?',(f'merged:{memory_id}',row['id']))
+            return memory_id
 
     def memories(self, actor, group_id, limit=100):
         with self.db() as db:
-            return [dict(r) for r in db.execute('SELECT * FROM memories WHERE actor=? AND group_id=? ORDER BY id DESC LIMIT ?', (actor,group_id,limit))]
+            return [dict(r) for r in db.execute("SELECT * FROM memories WHERE actor=? AND group_id=? AND archive_reason='' ORDER BY id DESC LIMIT ?", (actor,group_id,limit))]
+
+    def member_memories(self, actor, group_id, member_id):
+        with self.db() as db:
+            return [dict(r) for r in db.execute("SELECT id,member_id,content FROM memories WHERE actor=? AND group_id=? AND member_id=? AND archive_reason='' ORDER BY id DESC LIMIT 40",
+                                                (actor,group_id,member_id))]
 
     def delete_memory(self, memory_id):
         with self.db() as db:

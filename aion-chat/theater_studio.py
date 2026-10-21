@@ -554,39 +554,59 @@ async def set_chapter_completion(key: str, body: ChapterCompletion):
         return await change(key, status='ready' if body.completed else 'draft', error='')
 
 
-async def illustrate(key):
-    if key in _pictures:
-        return
+async def illustrate(key, *, retry=False):
+    # A rewritten chapter must wait for, rather than be skipped by, an old job.
+    async with lock('pictures_'+key):
+        await _illustrate(key, retry=retry)
+
+
+async def _illustrate(key, *, retry=False):
     _pictures[key] = True
+    c = None
     try:
         c = await load(key)
+        if not c or c.get('status') not in ('draft', 'ready'):
+            return
         book = await load(c['conv_id'])
-        if not book.get('illustrations') or c.get('images'):
+        if not book or not book.get('illustrations') or (c.get('images') and not retry):
             return
         cast, names = await cast_text(book)
-        plan = parse_json(await generate_text(c['conv_id'], f"为本章选择0至3个真正值得画的精彩场景，不强制配图。人物：{names}\n返回JSON {{\"scenes\":[{{\"quote\":\"正文中连续且唯一的一句原文，用来定位插图\",\"prompt\":\"场景、服饰、人物位置与动作，明确名字\",\"characters\":[\"人物名字\"]}}]}}\n正文：{c['content']}"))
-        scenes = []
-        for s in plan.get('scenes', [])[:3]:
-            quote = str(s.get('quote', ''))
-            if quote and quote in c['content']:
-                scenes.append(dict(id=uid('pic_'), after=c['content'].index(quote)+len(quote), prompt=str(s['prompt']), characters=s.get('characters', []), status='pending', url=''))
+        scenes = c.get('images') or []
+        if not scenes:
+            plan = parse_json(await generate_text(c['conv_id'], f"为本章选择0至3个真正值得画的精彩场景，不强制配图。人物：{names}\n返回JSON {{\"scenes\":[{{\"quote\":\"正文中连续且唯一的一句原文，用来定位插图\",\"prompt\":\"场景、服饰、人物位置与动作，明确名字\",\"characters\":[\"人物名字\"]}}]}}\n正文：{c['content']}"))
+            for s in plan.get('scenes', [])[:3]:
+                quote = str(s.get('quote', ''))
+                if quote and quote in c['content']:
+                    scenes.append(dict(id=uid('pic_'), after=c['content'].index(quote)+len(quote), prompt=str(s['prompt']), characters=s.get('characters', []), status='pending', url=''))
+        for s in scenes:
+            if s.get('status') != 'ready':
+                s.update(status='pending', error='')
         current = await load(key)
         if not current or current['revision'] != c['revision']:
             return
         await change(key, images=scenes, image_error='')
         for s in scenes:
+            if s.get('status') == 'ready':
+                continue
             current = await load(key)
             if not current or current['revision'] != c['revision']:
                 return
             from image_gen import generate_image
             refs = [{'name': a['name'], 'path': str(reference_path(a['image']))} for a in cast if a['image'] and (a['name'] in s['characters'] or any(alias.strip() in s['characters'] for alias in a['aliases'].split(',') if alias.strip()))]
-            filename = await generate_image(f"统一画风：{book['style']}\n人物固定外貌：{names}\n{s['prompt']}", references=refs)
-            s.update(status='ready' if filename else 'failed', url=('/uploads/'+filename.lstrip('/')) if filename else '')
+            try:
+                filename = await generate_image(f"统一画风：{book['style']}\n人物固定外貌：{names}\n{s['prompt']}", references=refs, raise_errors=True)
+                s.update(status='ready' if filename else 'failed', url=('/uploads/'+filename.lstrip('/')) if filename else '',
+                         error='' if filename else '生图未返回图片，可重试')
+            except TimeoutError:
+                s.update(status='failed', url='', error='生图等待超时，可稍后重试')
+            except Exception as exc:
+                s.update(status='failed', url='', error=(str(exc) or type(exc).__name__)[:500])
             current = await load(key)
             if current and current['revision'] == c['revision']:
                 await change(key, images=scenes)
     except Exception:
-        if await load(key):
+        current = await load(key)
+        if c and current and current['revision'] == c['revision']:
             await change(key, image_error='配图未完成，可重试')
     finally:
         _pictures.pop(key, None)
@@ -599,8 +619,7 @@ async def retry_images(key: str):
         raise HTTPException(409, '请先完成本章正文')
     if key in _pictures:
         return {'ok': True}
-    await change(key, images=[])
-    asyncio.create_task(illustrate(key))
+    asyncio.create_task(illustrate(key, retry=True))
     return {'ok': True}
 
 

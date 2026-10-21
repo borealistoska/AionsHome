@@ -1,0 +1,20 @@
+.msg-row.system:has(.mini-game-invite), .system-event-msg:has(.mini-game-invite) {
+  align-self: center; align-items: center; width: 100%; max-width: 100%;
+  margin: 3px 0 5px; padding: 0; text-align: center;
+}
+.msg-row.system:has(.mini-game-invite) .system-notice,
+.system-event-msg:has(.mini-game-invite) .system-event-line {
+  justify-content: center; width: 100%; max-width: 100%; padding: 0;
+}
+:is(.system-notice, .system-event-line):has(.mini-game-invite) > .system-notice-marker { display: none; }
+.mini-game-invite {
+  display: inline-flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 8px;
+  box-sizing: border-box; max-width: calc(100% - 32px); min-height: 30px; padding: 4px 12px;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--surface);
+  color: var(--text); font-family: inherit; font-size: 13px; line-height: 1.5;
+  text-decoration: none; overflow-wrap: anywhere;
+  cursor: pointer; transition: background .15s ease;
+}
+.mini-game-invite-go { color: var(--accent); font-size: 11px; white-space: nowrap; }
+.mini-game-invite:hover { background: var(--surface2); border-color: var(--accent); }
+.mini-game-invite:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
